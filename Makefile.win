@@ -1,0 +1,15 @@
+obj := c-ray.o
+bin := c-ray.exe
+
+CC := i586-mingw32msvc-gcc
+SDL_CONFIG := /usr/i586-mingw32msvc/bin/i386-mingw32msvc-sdl-config
+
+opt := -O3 -ffast-math -mfpmath=sse
+CFLAGS := $(opt) -std=gnu89 -pedantic -Wall `$(SDL_CONFIG) --cflags`
+
+$(bin): $(obj)
+	$(CC) -o $@ $(obj) `$(SDL_CONFIG) --libs`
+
+.PHONY: clean
+clean:
+	$(RM) $(obj) $(bin)
