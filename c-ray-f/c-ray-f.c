@@ -27,15 +27,23 @@
 #include <ctype.h>
 #include <errno.h>
 
+#if !defined(unix) && !defined(__unix__)
+#ifdef __MACH__
+#define unix		1
+#define __unix__	1
+#endif	/* __MACH__ */
+#endif	/* unix */
+
 /* find the appropriate way to define explicitly sized types */
-#if (__STDC_VERSION__ >= 199900) || defined(__GLIBC__)	/* C99 or GNU libc */
+/* for C99 or GNU libc (also mach's libc) we can use stdint.h */
+#if (__STDC_VERSION__ >= 199900) || defined(__GLIBC__) || defined(__MACH__)
 #include <stdint.h>
-#elif defined(__unix__)	/* some UNIX system */
+#elif defined(unix) || defined(__unix__)	/* some UNIX systems have them in sys/types.h */
 #include <sys/types.h>
-#elif defined(_MSC_VER)	/* the nameless one */
+#elif defined(__WIN32__) || defined(WIN32)	/* the nameless one */
 typedef unsigned __int8 uint8_t;
 typedef unsigned __int32 uint32_t;
-#endif
+#endif	/* sized type detection */
 
 struct vec3 {
 	double x, y, z;
@@ -156,14 +164,14 @@ int main(int argc, char **argv) {
 				break;
 
 			case 'i':
-				if(!(infile = fopen(argv[++i], "r"))) {
+				if(!(infile = fopen(argv[++i], "rb"))) {
 					fprintf(stderr, "failed to open input file %s: %s\n", argv[i], strerror(errno));
 					return EXIT_FAILURE;
 				}
 				break;
 
 			case 'o':
-				if(!(outfile = fopen(argv[++i], "w"))) {
+				if(!(outfile = fopen(argv[++i], "wb"))) {
 					fprintf(stderr, "failed to open output file %s: %s\n", argv[i], strerror(errno));
 					return EXIT_FAILURE;
 				}
@@ -560,7 +568,7 @@ void load_scene(FILE *fp) {
 
 
 /* provide a millisecond-resolution timer for each system */
-#ifdef __unix__
+#if defined(unix) || defined(__unix__)
 #include <time.h>
 #include <sys/time.h>
 unsigned long get_msec(void) {
