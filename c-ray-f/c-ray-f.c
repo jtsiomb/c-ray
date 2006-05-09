@@ -436,7 +436,7 @@ struct vec3 get_sample_pos(int x, int y, int sample) {
 	static double sf = 0.0;
 
 	if(sf == 0.0) {
-		sf = 2.0 / (double)xres;
+		sf = 1.5 / (double)xres;
 	}
 
 	pt.x = ((double)x / (double)xres) - 0.5;
