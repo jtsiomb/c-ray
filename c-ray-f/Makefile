@@ -10,3 +10,11 @@ $(bin): $(obj)
 .PHONY: clean
 clean:
 	rm -f $(obj) $(bin)
+
+.PHONY: install
+install:
+	cp $(bin) /usr/local/bin/$(bin)
+
+.PHONY: uninstall
+uninstall:
+	rm -f /usr/local/bin/$(bin)

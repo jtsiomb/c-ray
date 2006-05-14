@@ -5,7 +5,7 @@
 ; 	dir - 0 for a central sphere, otherwise px/nx/py/ny/pz/nz for direction
 (define generate
   (lambda (sz iter pos dir)
-	(let ((scale 0.4) (max-iter 7) (px 1) (nx 2) (py 3) (ny 4) (pz 5) (nz 6))
+	(let ((scale 0.4) (px 1) (nx 2) (py 3) (ny 4) (pz 5) (nz 6))
 	  (if (> iter 0)
 		(let ((ofs (+ (* sz scale) sz)) (new-scale (* sz scale)))
 		  (sphere sz pos)		; generate a sphere here
