@@ -1,11 +1,12 @@
 obj := c-ray.o
 bin := c-ray
 
-opt := -O3 -ffast-math -mfpmath=sse
-CFLAGS := $(opt) -std=gnu89 -pedantic -Wall `sdl-config --cflags`
+opt := -O3 -ffast-math
+CC := gcc
+CFLAGS := $(opt) -std=c99 -pedantic -Wall `sdl-config --cflags`
 
 $(bin): $(obj)
-	$(CC) -o $@ $(obj) `sdl-config --libs`
+	$(CC) -o $@ $(obj) -lm `sdl-config --libs`
 
 .PHONY: clean
 clean:

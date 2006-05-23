@@ -13,14 +13,7 @@
 #define msleep(x)	Sleep(x)
 #endif
 
-#ifdef __GNUC__
-#include <stdint.h>
-#endif	/* GCC */
-
-#ifdef _MSC_VER
-typedef unsigned __int8 uint8_t;
-typedef unsigned __int32 uint32_t;
-#endif	/* MSC */
+#include <sys/types.h>
 
 struct vec3 {
 	double x, y, z;
@@ -71,7 +64,7 @@ void load_scene(const char *fname);
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
 
 /* bit-shift ammount for packing each color into a 32bit uint */
-#ifdef BIGEND
+#if defined(BIG_ENDIAN) || defined(__mips__) || defined(__PowerPC__)
 #define RSHIFT	0
 #define BSHIFT	16
 #else	/* little endian */
