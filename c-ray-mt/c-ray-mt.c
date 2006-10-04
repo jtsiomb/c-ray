@@ -137,7 +137,10 @@ struct camera cam;
 
 int thread_num = 1;
 struct thread_data *threads;
+
 int start = 0;
+pthread_mutex_t start_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t start_cond = PTHREAD_COND_INITIALIZER;
 
 #define NRAN	1024
 #define MASK	(NRAN - 1)
@@ -162,6 +165,7 @@ int main(int argc, char **argv) {
 	int i;
 	unsigned long rend_time, start_time;
 	uint32_t *pixels;
+	double sl, sl_per_thread;
 	FILE *infile = stdin, *outfile = stdout;
 
 	for(i=1; i<argc; i++) {
@@ -174,8 +178,8 @@ int main(int argc, char **argv) {
 					return EXIT_FAILURE;
 				}
 				thread_num = atoi(argv[i]);
-				if(!thread_num || thread_num > 1024) {
-					fprintf(stderr, "do you really need %d threads?\n");
+				if(!thread_num) {
+					fprintf(stderr, "invalid number of threads specified: %d\n", thread_num);
 					return EXIT_FAILURE;
 				}
 				break;
@@ -245,13 +249,16 @@ int main(int argc, char **argv) {
 	}
 
 	if(!(threads = malloc(thread_num * sizeof *threads))) {
-		perror("malloc failure");
+		perror("failed to allocate thread table");
 		return EXIT_FAILURE;
 	}
 
+	sl = 0.0;
+	sl_per_thread = (double)yres / (double)thread_num;
 	for(i=0; i<thread_num; i++) {
-		threads[i].sl_count = yres / thread_num;
-		threads[i].sl_start = i * threads[i].sl_count;
+		threads[i].sl_start = (int)sl;
+		sl += sl_per_thread;
+		threads[i].sl_count = (int)sl - threads[i].sl_start;
 		threads[i].pixels = pixels;
 		
 		if(pthread_create(&threads[i].tid, 0, thread_func, &threads[i]) != 0) {
@@ -259,9 +266,14 @@ int main(int argc, char **argv) {
 			return EXIT_FAILURE;
 		}
 	}
+	threads[thread_num - 1].sl_count = yres - threads[thread_num - 1].sl_start;
 	
+	pthread_mutex_lock(&start_mutex);
 	start_time = get_msec();
 	start = 1;
+	pthread_cond_broadcast(&start_cond);
+	pthread_mutex_unlock(&start_mutex);
+
 	for(i=0; i<thread_num; i++) {
 		pthread_join(threads[i].tid, 0);
 	}
@@ -286,7 +298,7 @@ int main(int argc, char **argv) {
 
 /* render a frame of xsz/ysz dimensions into the provided framebuffer */
 void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples) {
-	int i, j, s;
+	int i, s;
 	double rcp_samples = 1.0 / (double)samples;
 
 	for(i=0; i<xsz; i++) {
@@ -476,7 +488,6 @@ struct ray get_primary_ray(int x, int y, int sample) {
 
 struct vec3 get_sample_pos(int x, int y, int sample) {
 	struct vec3 pt;
-	double xsz = 2.0, ysz = xres / aspect;
 	static double sf = 0.0;
 
 	if(sf == 0.0) {
@@ -638,7 +649,11 @@ void *thread_func(void *tdata) {
 	int i;
 	struct thread_data *td = (struct thread_data*)tdata;
 
-	while(!start);
+	pthread_mutex_lock(&start_mutex);
+	while(!start) {
+		pthread_cond_wait(&start_cond, &start_mutex);
+	}
+	pthread_mutex_unlock(&start_mutex);
 
 	for(i=0; i<td->sl_count; i++) {
 		render_scanline(xres, yres, i + td->sl_start, td->pixels, rays_per_pixel);
