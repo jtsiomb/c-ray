@@ -1,4 +1,4 @@
-/* c-ray-f - a simple multithreaded raytracing filter.
+/* c-ray-mt - a simple multithreaded raytracing filter.
  * Copyright (C) 2006 John Tsiombikas <nuclear@siggraph.org>
  *
  * You are free to use, modify and redistribute this program under the
@@ -6,10 +6,12 @@
  * see "http://www.gnu.org/licenses/gpl.txt" for details.
  * ---------------------------------------------------------------------
  * Usage:
- *   compile:  cc -o c-ray-mt c-ray-mt.c -lm -lpthread
- *   run:      cat scene | ./c-ray-mt >foo.ppm
- *   enjoy:    display foo.ppm (with imagemagick)
- *      or:    imgview foo.ppm (on IRIX)
+ *   compile:  just type make
+ *              (add any arch-specific optimizations for your compiler in CFLAGS first)
+ *       run:  cat scene | ./c-ray-mt [-t num-threads] >foo.ppm
+ *              (on broken systems such as windows try: c-ray-mt -i scene -o foo.ppm)
+ *     enjoy:  display foo.ppm
+ *              (with imagemagick, or use your favorite image viewer)
  * ---------------------------------------------------------------------
  * Scene file format:
  *   # sphere (many)
@@ -27,6 +29,10 @@
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
+
+#define VER_MAJOR	1
+#define VER_MINOR	1
+#define VER_STR		"c-ray-mt v%d.%d\n"
 
 #if !defined(unix) && !defined(__unix__)
 #ifdef __MACH__
@@ -174,7 +180,7 @@ int main(int argc, char **argv) {
 			switch(argv[i][1]) {
 			case 't':
 				if(!isdigit(argv[++i][0])) {
-					fprintf(stderr, "-t mus be followed by the number of worker threads to sawn\n");
+					fprintf(stderr, "-t mus be followed by the number of worker threads to spawn\n");
 					return EXIT_FAILURE;
 				}
 				thread_num = atoi(argv[i]);
@@ -267,6 +273,8 @@ int main(int argc, char **argv) {
 		}
 	}
 	threads[thread_num - 1].sl_count = yres - threads[thread_num - 1].sl_start;
+
+	fprintf(stderr, VER_STR, VER_MAJOR, VER_MINOR);
 	
 	pthread_mutex_lock(&start_mutex);
 	start_time = get_msec();
