@@ -64,6 +64,11 @@ struct material {
 	struct vec3 col;	/* color */
 	double spow;		/* specular power */
 	double refl;		/* reflection intensity */
+
+	int use_cook_tor;	/* use cook-torrance model */
+	double roughness;	/* C&T */
+	double specularity;	/* C&T */
+	double ior;			/* C&T */
 };
 
 struct sphere {
@@ -74,7 +79,7 @@ struct sphere {
 };
 
 struct spoint {
-	struct vec3 pos, normal, vref;	/* position, normal and view reflection */
+	struct vec3 pos, normal, view, vref;	/* position, normal, view and view reflection */
 	double dist;		/* parametric distance of intersection along the ray */
 };
 
@@ -110,6 +115,7 @@ void *thread_func(void *tdata);
 #define FOV				0.78539816		/* field of view in rads (pi/4) */
 #define HALF_FOV		(FOV * 0.5)
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
+#define PI				3.1415926535897931
 
 /* bit-shift ammount for packing each color into a 32bit uint */
 #ifdef LITTLE_ENDIAN
@@ -125,6 +131,7 @@ void *thread_func(void *tdata);
 #define SQ(x)		((x) * (x))
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
+#define CLAMP(x, a, b)	MIN(MAX(x, a), b)
 #define DOT(a, b)	((a).x * (b).x + (a).y * (b).y + (a).z * (b).z)
 #define NORMALIZE(a)  do {\
 	double len = sqrt(DOT(a, a));\
@@ -401,12 +408,61 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 		if(!in_shadow) {
 			NORMALIZE(ldir);
 
-			idiff = MAX(DOT(sp->normal, ldir), 0.0);
-			ispec = obj->mat.spow > 0.0 ? pow(MAX(DOT(sp->vref, ldir), 0.0), obj->mat.spow) : 0.0;
+			if(obj->mat.use_cook_tor) {
+				struct vec3 half, view;
+				double ndoth, ndotv, ndotl, vdoth, ndoth_sq, sin2_ang, tan2_ang;
+				double nh_ang;
+				double geom_a, geom_b, geom;
+				double ftmp, d_mf;
+				double fres, g, c;
+				double m = MAX(obj->mat.roughness, 0.0001);
 
-			col.x += idiff * obj->mat.col.x + ispec;
-			col.y += idiff * obj->mat.col.y + ispec;
-			col.z += idiff * obj->mat.col.z + ispec;
+				/* half vector */
+				half.x = sp->view.x + ldir.x;
+				half.y = sp->view.y + ldir.y;
+				half.z = sp->view.z + ldir.z;
+				NORMALIZE(half);
+
+				/* calc various useful dot products */
+				ndoth = MAX(DOT(sp->normal, half), 0.0);
+				ndotv = MAX(DOT(sp->normal, sp->view), 0.0);
+				ndotl = MAX(DOT(sp->normal, ldir), 0.0);
+				vdoth = MAX(DOT(sp->view, half), 0.0);
+				ndoth_sq = SQ(ndoth);
+
+				/* geometric term */
+				geom_a = (2.0 * ndoth * ndotv) / vdoth;
+				geom_b = (2.0 * ndoth * ndotl) / vdoth;
+				geom = MIN(1.0, MIN(geom_a, geom_b));
+
+				/* beckmann microfacet distribution term */
+				sin2_ang = 1.0 - ndoth_sq;		/* sin^2(a) = 1.0 - cos^2(a) */
+				tan2_ang = sin2_ang / ndoth_sq;	/* tan^2(a) = sin^2(a) / cos^2(a) */
+				d_mf = exp(-tan2_ang / SQ(m)) / (SQ(m) * SQ(ndoth_sq));
+
+				/* fresnel term */
+				c = vdoth;
+				g = sqrt(SQ(obj->mat.ior) + SQ(vdoth) - 1.0);
+				ftmp = (c * (g + c) - 1.0) / (c * (g - c) + 1.0);
+				fres = 0.5 * (SQ(g - c) / SQ(g + c)) * (1.0 + SQ(ftmp));
+
+				/* specular and diffuse components */
+				ispec = obj->mat.specularity * ((fres / PI) * (d_mf / ndotl) * (geom / ndotv));
+				idiff = (1.0 - obj->mat.specularity) * MAX(DOT(sp->normal, ldir), 0.0);
+
+				/* add calculated lighting to pixel color */
+				col.x += CLAMP(fres, 0, 1);//idiff * obj->mat.col.x + ispec;
+				col.y += CLAMP(fres, 0, 1);//idiff * obj->mat.col.y + ispec;
+				col.z += CLAMP(fres, 0, 1);//idiff * obj->mat.col.z + ispec;
+
+			} else {	// use phong
+				idiff = MAX(DOT(sp->normal, ldir), 0.0);
+				ispec = obj->mat.spow > 0.0 ? pow(MAX(DOT(sp->vref, ldir), 0.0), obj->mat.spow) : 0.0;
+
+				col.x += idiff * obj->mat.col.x + ispec;
+				col.y += idiff * obj->mat.col.y + ispec;
+				col.z += idiff * obj->mat.col.z + ispec;
+			}
 		}
 	}
 
@@ -557,8 +613,12 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 		sp->normal.y = (sp->pos.y - sph->pos.y) / sph->rad;
 		sp->normal.z = (sp->pos.z - sph->pos.z) / sph->rad;
 
+		sp->view.x = -ray.dir.x;
+		sp->view.y = -ray.dir.y;
+		sp->view.z = -ray.dir.z;
 		sp->vref = reflect(ray.dir, sp->normal);
 		NORMALIZE(sp->vref);
+		NORMALIZE(sp->view);
 	}
 	return 1;
 }
@@ -574,7 +634,7 @@ void load_scene(FILE *fp) {
 	while((ptr = fgets(line, 256, fp))) {
 		int i;
 		struct vec3 pos, col;
-		double rad, spow, refl;
+		double rad, spow, refl, ior, rough;
 		
 		while(*ptr == ' ' || *ptr == '\t') ptr++;
 		if(*ptr == '#' || *ptr == '\n') continue;
@@ -613,7 +673,15 @@ void load_scene(FILE *fp) {
 		if(!(ptr = strtok(0, DELIM))) continue;
 		refl = atof(ptr);
 
-		if(type == 's') {
+		if(type == 'm') {
+			if(!(ptr = strtok(0, DELIM))) continue;
+			ior = atof(ptr);
+
+			if(!(ptr = strtok(0, DELIM))) continue;
+			rough = atof(ptr);
+		}
+
+		if(type == 's' || type == 'm') {
 			struct sphere *sph = malloc(sizeof *sph);
 			sph->next = obj_list->next;
 			obj_list->next = sph;
@@ -623,6 +691,12 @@ void load_scene(FILE *fp) {
 			sph->mat.col = col;
 			sph->mat.spow = spow;
 			sph->mat.refl = refl;
+
+			sph->mat.specularity = spow;
+			sph->mat.ior = ior;
+			sph->mat.roughness = rough;
+
+			sph->mat.use_cook_tor = (type == 'm') ? 1 : 0;
 		} else {
 			fprintf(stderr, "unknown type: %c\n", type);
 		}
