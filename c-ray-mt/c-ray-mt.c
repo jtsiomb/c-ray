@@ -426,7 +426,7 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 				/* calc various useful dot products */
 				ndoth = MAX(DOT(sp->normal, half), 0.0);
 				ndotv = MAX(DOT(sp->normal, sp->view), 0.0);
-				ndotl = MAX(DOT(sp->normal, ldir), 0.0);
+				ndotl = DOT(sp->normal, ldir);
 				vdoth = MAX(DOT(sp->view, half), 0.0);
 				ndoth_sq = SQ(ndoth);
 
@@ -451,9 +451,9 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 				idiff = (1.0 - obj->mat.specularity) * MAX(DOT(sp->normal, ldir), 0.0);
 
 				/* add calculated lighting to pixel color */
-				col.x += CLAMP(fres, 0, 1);//idiff * obj->mat.col.x + ispec;
-				col.y += CLAMP(fres, 0, 1);//idiff * obj->mat.col.y + ispec;
-				col.z += CLAMP(fres, 0, 1);//idiff * obj->mat.col.z + ispec;
+				col.x += idiff * obj->mat.col.x + ispec * obj->mat.col.x;
+				col.y += idiff * obj->mat.col.y + ispec * obj->mat.col.y;
+				col.z += idiff * obj->mat.col.z + ispec * obj->mat.col.z;
 
 			} else {	// use phong
 				idiff = MAX(DOT(sp->normal, ldir), 0.0);
