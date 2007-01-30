@@ -408,6 +408,7 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 		if(!in_shadow) {
 			NORMALIZE(ldir);
 
+#ifdef BUILD_COOK_TORRANCE
 			if(obj->mat.use_cook_tor) {
 				struct vec3 half, view;
 				double ndoth, ndotv, ndotl, vdoth, ndoth_sq, sin2_ang, tan2_ang;
@@ -456,13 +457,16 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 				col.z += idiff * obj->mat.col.z + ispec * obj->mat.col.z;
 
 			} else {	// use phong
+#endif
 				idiff = MAX(DOT(sp->normal, ldir), 0.0);
 				ispec = obj->mat.spow > 0.0 ? pow(MAX(DOT(sp->vref, ldir), 0.0), obj->mat.spow) : 0.0;
 
 				col.x += idiff * obj->mat.col.x + ispec;
 				col.y += idiff * obj->mat.col.y + ispec;
 				col.z += idiff * obj->mat.col.z + ispec;
+#ifdef BUILD_COOK_TORRANCE
 			}
+#endif
 		}
 	}
 
