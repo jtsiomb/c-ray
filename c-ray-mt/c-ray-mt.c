@@ -30,8 +30,8 @@
 #include <errno.h>
 #include <pthread.h>
 
-#define VER_MAJOR	1
-#define VER_MINOR	1
+#define VER_MAJOR	2
+#define VER_MINOR	0
 #define VER_STR		"c-ray-mt v%d.%d\n"
 
 #if !defined(unix) && !defined(__unix__)
@@ -52,18 +52,19 @@ typedef unsigned __int8 uint8_t;
 typedef unsigned __int32 uint32_t;
 #endif	/* sized type detection */
 
-struct vec3 {
+typedef struct vec3 {
 	double x, y, z;
-};
+} vec3_t;
 
-struct ray {
-	struct vec3 orig, dir;
-};
+typedef struct ray {
+	vec3_t orig, dir;
+} ray_t;
 
 struct material {
-	struct vec3 col;	/* color */
+	vec3_t col;	/* color */
 	double spow;		/* specular power */
 	double refl;		/* reflection intensity */
+	double refr;		/* refraction (transmission) intensity */
 
 	int use_cook_tor;	/* use cook-torrance model */
 	double roughness;	/* C&T */
@@ -72,19 +73,20 @@ struct material {
 };
 
 struct sphere {
-	struct vec3 pos;
+	vec3_t pos;
 	double rad;
 	struct material mat;
 	struct sphere *next;
 };
 
 struct spoint {
-	struct vec3 pos, normal, view, vref;	/* position, normal, view and view reflection */
+	ray_t ray;
+	vec3_t pos, normal, view, vref;	/* position, normal, view and view reflection */
 	double dist;		/* parametric distance of intersection along the ray */
 };
 
 struct camera {
-	struct vec3 pos, targ;
+	vec3_t pos, targ;
 	double fov;
 };
 
@@ -96,14 +98,15 @@ struct thread_data {
 };
 
 void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples);
-struct vec3 trace(struct ray ray, int depth);
-struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth);
-struct vec3 reflect(struct vec3 v, struct vec3 n);
-struct vec3 cross_product(struct vec3 v1, struct vec3 v2);
-struct ray get_primary_ray(int x, int y, int sample);
-struct vec3 get_sample_pos(int x, int y, int sample);
-struct vec3 jitter(int x, int y, int s);
-int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp);
+vec3_t trace(ray_t ray, int depth);
+vec3_t shade(struct sphere *obj, struct spoint *sp, int depth);
+vec3_t reflect(vec3_t v, vec3_t n);
+vec3_t refract(vec3_t v, vec3_t n, double from_ior, double to_ior);
+vec3_t cross_product(vec3_t v1, vec3_t v2);
+ray_t get_primary_ray(int x, int y, int sample);
+vec3_t get_sample_pos(int x, int y, int sample);
+vec3_t jitter(int x, int y, int s);
+int ray_sphere(const struct sphere *sph, ray_t ray, struct spoint *sp);
 void load_scene(FILE *fp);
 unsigned long get_msec(void);
 
@@ -144,7 +147,7 @@ int yres = 600;
 int rays_per_pixel = 1;
 double aspect = 1.333333;
 struct sphere *obj_list;
-struct vec3 lights[MAX_LIGHTS];
+vec3_t lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
 
@@ -157,7 +160,7 @@ pthread_cond_t start_cond = PTHREAD_COND_INITIALIZER;
 
 #define NRAN	1024
 #define MASK	(NRAN - 1)
-struct vec3 urand[NRAN];
+vec3_t urand[NRAN];
 int irand[NRAN];
 
 const char *usage = {
@@ -321,7 +324,7 @@ void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples) {
 		r = g = b = 0.0;
 			
 		for(s=0; s<samples; s++) {
-			struct vec3 col = trace(get_primary_ray(i, sl, s), 0);
+			vec3_t col = trace(get_primary_ray(i, sl, s), 0);
 			r += col.x;
 			g += col.y;
 			b += col.z;
@@ -340,8 +343,8 @@ void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples) {
 /* trace a ray throught the scene recursively (the recursion happens through
  * shade() to calculate reflection rays if necessary).
  */
-struct vec3 trace(struct ray ray, int depth) {
-	struct vec3 col;
+vec3_t trace(ray_t ray, int depth) {
+	vec3_t col;
 	struct spoint sp, nearest_sp;
 	struct sphere *nearest_obj = 0;
 	struct sphere *iter = obj_list->next;
@@ -373,18 +376,29 @@ struct vec3 trace(struct ray ray, int depth) {
 	return col;
 }
 
+
 /* Calculates direct illumination with the phong reflectance model.
  * Also handles reflections by calling trace again, if necessary.
  */
-struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
-	int i;
-	struct vec3 col = {0, 0, 0};
+vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
+	int i, entering;
+	double fres_term;
+	vec3_t col = {0, 0, 0};
+
+	if(DOT(sp->ray.dir, sp->normal) > 0.0) {
+		sp->normal.x = -sp->normal.x;
+		sp->normal.y = -sp->normal.y;
+		sp->normal.z = -sp->normal.z;
+		entering = 0;
+	} else {
+		entering = 1;
+	}
 
 	/* for all lights ... */
 	for(i=0; i<lnum; i++) {
 		double ispec, idiff;
-		struct vec3 ldir;
-		struct ray shadow_ray;
+		vec3_t ldir;
+		ray_t shadow_ray;
 		struct sphere *iter = obj_list->next;
 		int in_shadow = 0;
 
@@ -410,12 +424,12 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 
 #ifdef BUILD_COOK_TORRANCE
 			if(obj->mat.use_cook_tor) {
-				struct vec3 half, view;
+				vec3_t half;
 				double ndoth, ndotv, ndotl, vdoth, ndoth_sq, sin2_ang, tan2_ang;
 				double nh_ang;
 				double geom_a, geom_b, geom;
 				double ftmp, d_mf;
-				double fres, g, c;
+				double fres, c, g;
 				double m = MAX(obj->mat.roughness, 0.0001);
 
 				/* half vector */
@@ -474,8 +488,8 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 	 * to calculate the light arriving from the mirror direction.
 	 */
 	if(obj->mat.refl > 0.0) {
-		struct ray ray;
-		struct vec3 rcol;
+		ray_t ray;
+		vec3_t rcol;
 
 		ray.orig = sp->pos;
 		ray.dir = sp->vref;
@@ -489,12 +503,31 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 		col.z += rcol.z * obj->mat.refl;
 	}
 
+	if(obj->mat.refr > 0.0) {
+		ray_t ray;
+		vec3_t rcol;
+
+		double from_ior = entering ? 1.0 : obj->mat.ior;
+		double to_ior = entering ? obj->mat.ior : 1.0;
+
+		ray.orig = sp->pos;
+		ray.dir = refract(sp->view, sp->normal, from_ior, to_ior);
+		ray.dir.x *= RAY_MAG;
+		ray.dir.y *= RAY_MAG;
+		ray.dir.z *= RAY_MAG;
+
+		rcol = trace(ray, depth + 1);
+		col.x += rcol.x * obj->mat.refr;
+		col.y += rcol.y * obj->mat.refr;
+		col.z += rcol.z * obj->mat.refr;
+	}
+
 	return col;
 }
 
 /* calculate reflection vector */
-struct vec3 reflect(struct vec3 v, struct vec3 n) {
-	struct vec3 res;
+vec3_t reflect(vec3_t v, vec3_t n) {
+	vec3_t res;
 	double dot = v.x * n.x + v.y * n.y + v.z * n.z;
 	res.x = -(2.0 * dot * n.x - v.x);
 	res.y = -(2.0 * dot * n.y - v.y);
@@ -502,8 +535,33 @@ struct vec3 reflect(struct vec3 v, struct vec3 n) {
 	return res;
 }
 
-struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
-	struct vec3 res;
+vec3_t refract(vec3_t v, vec3_t n, double from_ior, double to_ior)
+{
+	double cos_inc, ior, radical, beta;
+	vec3_t neg_norm;
+
+	neg_norm.x = -n.x;
+	neg_norm.y = -n.y;
+	neg_norm.z = -n.z;
+	
+	cos_inc = DOT(v, neg_norm);
+	ior = from_ior / to_ior;
+	
+	radical = 1.0 + SQ(ior) * (SQ(cos_inc) - 1.0);
+	if(radical < 0.0) {
+		return reflect(v, n);
+	}
+
+	beta = ior * cos_inc - sqrt(radical);
+
+	v.x = v.x * ior + n.x * beta;
+	v.y = v.y * ior + n.y * beta;
+	v.z = v.z * ior + n.z * beta;
+	return v;
+}
+
+vec3_t cross_product(vec3_t v1, vec3_t v2) {
+	vec3_t res;
 	res.x = v1.y * v2.z - v1.z * v2.y;
 	res.y = v1.z * v2.x - v1.x * v2.z;
 	res.z = v1.x * v2.y - v1.y * v2.x;
@@ -511,10 +569,10 @@ struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
 }
 
 /* determine the primary ray corresponding to the specified pixel (x, y) */
-struct ray get_primary_ray(int x, int y, int sample) {
-	struct ray ray;
-	float m[3][3];
-	struct vec3 i, j = {0, 1, 0}, k, dir, orig, foo;
+ray_t get_primary_ray(int x, int y, int sample) {
+	ray_t ray;
+	double m[3][3];
+	vec3_t i, j = {0, 1, 0}, k, dir, orig, foo;
 
 	k.x = cam.targ.x - cam.pos.x;
 	k.y = cam.targ.y - cam.pos.y;
@@ -554,8 +612,8 @@ struct ray get_primary_ray(int x, int y, int sample) {
 }
 
 
-struct vec3 get_sample_pos(int x, int y, int sample) {
-	struct vec3 pt;
+vec3_t get_sample_pos(int x, int y, int sample) {
+	vec3_t pt;
 	static double sf = 0.0;
 
 	if(sf == 0.0) {
@@ -566,7 +624,7 @@ struct vec3 get_sample_pos(int x, int y, int sample) {
 	pt.y = -(((double)y / (double)yres) - 0.65) / aspect;
 
 	if(sample) {
-		struct vec3 jt = jitter(x, y, sample);
+		vec3_t jt = jitter(x, y, sample);
 		pt.x += jt.x * sf;
 		pt.y += jt.y * sf / aspect;
 	}
@@ -574,8 +632,8 @@ struct vec3 get_sample_pos(int x, int y, int sample) {
 }
 
 /* jitter function taken from Graphics Gems I. */
-struct vec3 jitter(int x, int y, int s) {
-	struct vec3 pt;
+vec3_t jitter(int x, int y, int s) {
+	vec3_t pt;
 	pt.x = urand[(x + (y << 2) + irand[(x + s) & MASK]) & MASK].x;
 	pt.y = urand[(y + (x << 2) + irand[(y + s) & MASK]) & MASK].y;
 	return pt;
@@ -585,7 +643,7 @@ struct vec3 jitter(int x, int y, int s) {
  * Also the surface point parameters like position, normal, etc are returned through
  * the sp pointer if it is not NULL.
  */
-int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
+int ray_sphere(const struct sphere *sph, ray_t ray, struct spoint *sp) {
 	double a, b, c, d, sqrt_d, t1, t2;
 	
 	a = SQ(ray.dir.x) + SQ(ray.dir.y) + SQ(ray.dir.z);
@@ -623,6 +681,8 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 		sp->vref = reflect(ray.dir, sp->normal);
 		NORMALIZE(sp->vref);
 		NORMALIZE(sp->view);
+
+		sp->ray = ray;
 	}
 	return 1;
 }
@@ -637,7 +697,7 @@ void load_scene(FILE *fp) {
 	
 	while((ptr = fgets(line, 256, fp))) {
 		int i;
-		struct vec3 pos, col;
+		vec3_t pos, col;
 		double rad, spow, refl, ior, rough;
 		
 		while(*ptr == ' ' || *ptr == '\t') ptr++;
@@ -695,6 +755,7 @@ void load_scene(FILE *fp) {
 			sph->mat.col = col;
 			sph->mat.spow = spow;
 			sph->mat.refl = refl;
+			sph->mat.refr = 0.0;
 
 			sph->mat.specularity = spow;
 			sph->mat.ior = ior;

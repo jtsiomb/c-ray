@@ -2,7 +2,7 @@ obj = c-ray-mt.o
 bin = c-ray-mt
 
 CC = gcc
-CFLAGS = -O3 -ffast-math
+CFLAGS = -O3 -ffast-math -DBUILD_COOK_TORRANCE
 
 $(bin): $(obj)
 	$(CC) -o $@ $(obj) -lm -lpthread
