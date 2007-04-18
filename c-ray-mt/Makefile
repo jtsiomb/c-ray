@@ -2,7 +2,7 @@ obj = c-ray-mt.o
 bin = c-ray-mt
 
 CC = gcc
-CFLAGS = -pedantic -Wall -O3 -g -ffast-math -DBUILD_COOK_TORRANCE
+CFLAGS = -pedantic -Wall -Wno-uninitialized -O3 -g -ffast-math -DBUILD_COOK_TORRANCE
 LDFLAGS = -L/usr/local/lib -lm -lpthread -lkdtree
 
 $(bin): $(obj)

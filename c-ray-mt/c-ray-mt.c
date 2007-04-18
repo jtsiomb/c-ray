@@ -24,6 +24,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
@@ -128,6 +129,7 @@ vec3_t jitter(int x, int y, int s);
 int ray_sphere(const struct sphere *sph, ray_t ray, struct spoint *sp);
 void load_scene(FILE *fp);
 unsigned long get_msec(void);
+void sighandler(int sig);
 
 void *thread_func(void *tdata);
 
@@ -175,6 +177,7 @@ struct camera cam;
 
 int thread_num = 1;
 struct thread_data *threads;
+int scanlines_done;
 
 int start = 0;
 pthread_mutex_t start_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -325,13 +328,15 @@ int main(int argc, char **argv) {
 	threads[thread_num - 1].sl_count = yres - threads[thread_num - 1].sl_start;
 
 	fprintf(stderr, VER_STR, VER_MAJOR, VER_MINOR);
+	signal(SIGINT, sighandler);
 
 	if(photons_per_light > 0) {
-		fprintf(stderr, "building the photon map (%d photons)\n", photons_per_light * lnum);
+		fprintf(stderr, "building the photon map (%d photons)... ", photons_per_light * lnum);
 		if(photon_pass() == -1) {
 			fprintf(stderr, "error while building the photon map\n");
 			return EXIT_FAILURE;
 		}
+		fprintf(stderr, "done\n");
 	}
 	
 	pthread_mutex_lock(&start_mutex);
@@ -424,7 +429,7 @@ int photon_pass(void)
 	kd_data_destructor(kd, free);
 
 	for(i=0; i<lnum; i++) {
-		double energy = LT_ENERGY / lights[i].photons;
+		double energy = (double)LT_ENERGY / (double)lights[i].photons;
 		for(j=0; j<lights[i].photons; j++) {
 			ray_t ray;
 
@@ -633,7 +638,7 @@ vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 				col.y += idiff * obj->mat.col.y + ispec * obj->mat.col.y;
 				col.z += idiff * obj->mat.col.z + ispec * obj->mat.col.z;
 
-			} else {	// use phong
+			} else {	/* use phong */
 #endif
 				idiff = MAX(DOT(sp->normal, ldir), 0.0);
 				ispec = obj->mat.spow > 0.0 ? pow(MAX(DOT(sp->vref, ldir), 0.0), obj->mat.spow) : 0.0;
@@ -798,6 +803,7 @@ vec3_t get_sample_pos(int x, int y, int sample) {
 
 	pt.x = ((double)x / (double)xres) - 0.5;
 	pt.y = -(((double)y / (double)yres) - 0.65) / aspect;
+	pt.z = 0;
 
 	if(sample) {
 		vec3_t jt = jitter(x, y, sample);
@@ -812,6 +818,7 @@ vec3_t jitter(int x, int y, int s) {
 	vec3_t pt;
 	pt.x = urand[(x + (y << 2) + irand[(x + s) & MASK]) & MASK].x;
 	pt.y = urand[(y + (x << 2) + irand[(y + s) & MASK]) & MASK].y;
+	pt.z = 0;
 	return pt;
 }
 
@@ -989,7 +996,24 @@ void *thread_func(void *tdata) {
 
 	for(i=0; i<td->sl_count; i++) {
 		render_scanline(xres, yres, i + td->sl_start, td->pixels, rays_per_pixel);
+		scanlines_done++;
 	}
 
 	return 0;
+}
+
+
+void sighandler(int sig)
+{
+	static unsigned int last_int;
+
+	if(sig == SIGINT) {
+		unsigned int msec;
+		fprintf(stderr, "rendered: %d scanlines out of %d\n", scanlines_done, yres);
+		if((msec = get_msec()) - last_int < 1000) {
+			fprintf(stderr, "aborting\n");
+			exit(0);
+		}
+		last_int = msec;
+	}
 }
