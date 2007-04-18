@@ -2,10 +2,11 @@ obj = c-ray-mt.o
 bin = c-ray-mt
 
 CC = gcc
-CFLAGS = -O3 -ffast-math -DBUILD_COOK_TORRANCE
+CFLAGS = -pedantic -Wall -O3 -g -ffast-math -DBUILD_COOK_TORRANCE
+LDFLAGS = -L/usr/local/lib -lm -lpthread -lkdtree
 
 $(bin): $(obj)
-	$(CC) -o $@ $(obj) -lm -lpthread
+	$(CC) -o $@ $(obj) $(LDFLAGS)
 
 .PHONY: clean
 clean:

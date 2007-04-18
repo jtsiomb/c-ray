@@ -29,6 +29,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
+#include <kdtree.h>
 
 #define VER_MAJOR	2
 #define VER_MINOR	0
@@ -56,8 +57,11 @@ typedef struct vec3 {
 	double x, y, z;
 } vec3_t;
 
+#define IOR_STACK_SZ	8
 typedef struct ray {
 	vec3_t orig, dir;
+	double ior_stack[IOR_STACK_SZ];
+	int ior_stack_top;
 } ray_t;
 
 struct material {
@@ -90,6 +94,19 @@ struct camera {
 	double fov;
 };
 
+struct light {
+	vec3_t pos;
+	double radius;
+	double intensity;
+	int photons;
+};
+
+struct photon {
+	vec3_t pos;
+	vec3_t dir;
+	float r, g, b;
+};
+
 struct thread_data {
 	pthread_t tid;
 	int sl_start, sl_count;
@@ -97,7 +114,9 @@ struct thread_data {
 	uint32_t *pixels;
 };
 
+int photon_pass(void);
 void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples);
+struct sphere *find_nearest_hit(ray_t ray, struct spoint *sp);
 vec3_t trace(ray_t ray, int depth);
 vec3_t shade(struct sphere *obj, struct spoint *sp, int depth);
 vec3_t reflect(vec3_t v, vec3_t n);
@@ -111,6 +130,9 @@ void load_scene(FILE *fp);
 unsigned long get_msec(void);
 
 void *thread_func(void *tdata);
+
+#define LT_ENERGY		100
+#define GATHER_DIST		0.25
 
 #define MAX_LIGHTS		16				/* maximum number of lights */
 #define RAY_MAG			1000.0			/* trace rays of this magnitude */
@@ -147,7 +169,7 @@ int yres = 600;
 int rays_per_pixel = 1;
 double aspect = 1.333333;
 struct sphere *obj_list;
-vec3_t lights[MAX_LIGHTS];
+struct light lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
 
@@ -163,6 +185,9 @@ pthread_cond_t start_cond = PTHREAD_COND_INITIALIZER;
 vec3_t urand[NRAN];
 int irand[NRAN];
 
+void *kd;	/* pointer to the kd-tree */
+int photons_per_light = 0;
+
 const char *usage = {
 	"Usage: c-ray-mt [options]\n"
 	"  Reads a scene file from stdin, writes the image to stdout, and stats to stderr.\n\n"
@@ -172,6 +197,7 @@ const char *usage = {
 	"  -r <rays>  shoot <rays> rays per pixel (antialiasing)\n"
 	"  -i <file>  read from <file> instead of stdin\n"
 	"  -o <file>  write to <file> instead of stdout\n"
+	"  -p <num>   enable photon mapping and specify number of photons per light\n"
 	"  -h         this help screen\n\n"
 };
 
@@ -232,6 +258,19 @@ int main(int argc, char **argv) {
 				rays_per_pixel = atoi(argv[i]);
 				break;
 
+			case 'p':
+				if(!isdigit(argv[i + 1][0])) {
+					if(argv[i + 1][0] == '-' && argv[i + 1][2] == 0) {
+						photons_per_light = 1000;
+						break;
+					} else {
+						fputs("-p must be followed by a number (photons per light)\n", stderr);
+						return EXIT_FAILURE;
+					}
+				}
+				photons_per_light = atoi(argv[++i]);
+				break;
+
 			case 'h':
 				fputs(usage, stdout);
 				return 0;
@@ -253,6 +292,7 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 	load_scene(infile);
+
 
 	/* initialize the random number tables for the jitter */
 	for(i=0; i<NRAN; i++) urand[i].x = (double)rand() / RAND_MAX - 0.5;
@@ -285,6 +325,14 @@ int main(int argc, char **argv) {
 	threads[thread_num - 1].sl_count = yres - threads[thread_num - 1].sl_start;
 
 	fprintf(stderr, VER_STR, VER_MAJOR, VER_MINOR);
+
+	if(photons_per_light > 0) {
+		fprintf(stderr, "building the photon map (%d photons)\n", photons_per_light * lnum);
+		if(photon_pass() == -1) {
+			fprintf(stderr, "error while building the photon map\n");
+			return EXIT_FAILURE;
+		}
+	}
 	
 	pthread_mutex_lock(&start_mutex);
 	start_time = get_msec();
@@ -311,6 +359,84 @@ int main(int argc, char **argv) {
 
 	if(infile != stdin) fclose(infile);
 	if(outfile != stdout) fclose(outfile);
+
+	if(kd) kd_free(kd);
+	return 0;
+}
+
+void trace_photon(ray_t ray, float r, float g, float b, int iter)
+{
+	struct sphere *obj;
+	struct spoint sp;
+
+	if((obj = find_nearest_hit(ray, &sp))) {
+		double rand_val = (double)rand() / (double)RAND_MAX;
+
+		NORMALIZE(ray.dir);
+
+		if(iter > MAX_RAY_DEPTH || rand_val > obj->mat.refl + obj->mat.refr) {
+			struct photon *p = malloc(sizeof *p);
+			p->pos = sp.pos;
+			p->dir = ray.dir;
+			p->r = r;
+			p->g = g;
+			p->b = b;
+			
+			kd_insert(kd, p->pos.x, p->pos.y, p->pos.z, p);
+			return;
+		}
+
+		if(rand_val < obj->mat.refl) {
+			ray.dir = reflect(ray.dir, sp.normal);
+		} else {
+			double from_ior, to_ior;
+
+			if(DOT(ray.dir, sp.normal) > 0.0) {
+				from_ior = obj->mat.ior;
+				to_ior = 1.0;
+				sp.normal.x = -sp.normal.x;
+				sp.normal.y = -sp.normal.y;
+				sp.normal.z = -sp.normal.z;
+			} else {
+				from_ior = 1.0;
+				to_ior = obj->mat.ior;
+			}
+
+			ray.dir = refract(ray.dir, sp.normal, from_ior, to_ior);
+		}
+		
+		ray.orig = sp.pos;
+		ray.dir.x *= RAY_MAG;
+		ray.dir.y *= RAY_MAG;
+		ray.dir.z *= RAY_MAG;
+		trace_photon(ray, r, g, b, iter + 1);
+	}
+}
+
+/* called before rendering if photon mapping is enabled to build the photon map */
+int photon_pass(void)
+{
+	int i, j;
+
+	if(!(kd = kd_create())) {
+		return -1;
+	}
+	kd_data_destructor(kd, free);
+
+	for(i=0; i<lnum; i++) {
+		double energy = LT_ENERGY / lights[i].photons;
+		for(j=0; j<lights[i].photons; j++) {
+			ray_t ray;
+
+			ray.dir.x = RAY_MAG * (((double)rand() / (double)RAND_MAX) * 2.0 - 1.0);
+			ray.dir.y = RAY_MAG * (((double)rand() / (double)RAND_MAX) * 2.0 - 1.0);
+			ray.dir.z = RAY_MAG * (((double)rand() / (double)RAND_MAX) * 2.0 - 1.0);
+			ray.orig = lights[i].pos;
+
+			trace_photon(ray, energy, energy, energy, 0);
+		}
+	}
+
 	return 0;
 }
 
@@ -340,14 +466,33 @@ void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples) {
 	}
 }
 
+struct sphere *find_nearest_hit(ray_t ray, struct spoint *sp)
+{
+	struct spoint nearest_sp;
+	struct sphere *nearest_obj = 0;
+	struct sphere *iter = obj_list->next;
+
+	while(iter) {
+		if(ray_sphere(iter, ray, sp)) {
+			if(!nearest_obj || sp->dist < nearest_sp.dist) {
+				nearest_obj = iter;
+				nearest_sp = *sp;
+			}
+		}
+		iter = iter->next;
+	}
+
+	*sp = nearest_sp;
+	return nearest_obj;
+}
+
 /* trace a ray throught the scene recursively (the recursion happens through
  * shade() to calculate reflection rays if necessary).
  */
 vec3_t trace(ray_t ray, int depth) {
 	vec3_t col;
-	struct spoint sp, nearest_sp;
-	struct sphere *nearest_obj = 0;
-	struct sphere *iter = obj_list->next;
+	struct spoint sp;
+	struct sphere *obj;
 
 	/* if we reached the recursion limit, bail out */
 	if(depth >= MAX_RAY_DEPTH) {
@@ -355,20 +500,8 @@ vec3_t trace(ray_t ray, int depth) {
 		return col;
 	}
 	
-	/* find the nearest intersection ... */
-	while(iter) {
-		if(ray_sphere(iter, ray, &sp)) {
-			if(!nearest_obj || sp.dist < nearest_sp.dist) {
-				nearest_obj = iter;
-				nearest_sp = sp;
-			}
-		}
-		iter = iter->next;
-	}
-
-	/* and perform shading calculations as needed by calling shade() */
-	if(nearest_obj) {
-		col = shade(nearest_obj, &nearest_sp, depth);
+	if((obj = find_nearest_hit(ray, &sp))) {
+		col = shade(obj, &sp, depth);
 	} else {
 		col.x = col.y = col.z = 0.0;
 	}
@@ -376,13 +509,44 @@ vec3_t trace(ray_t ray, int depth) {
 	return col;
 }
 
+vec3_t calc_irradiance(vec3_t pos, vec3_t norm, float max_dist)
+{
+	void *kdres;
+	vec3_t irrad = {0, 0, 0};
+	int i, sz;
+	float tmp;
+
+	if(!(kdres = kd_nearest_range(kd, pos.x, pos.y, pos.z, max_dist))) {
+		fprintf(stderr, "kd_nearest_range returned 0! failed to allocate memory?\n");
+		exit(EXIT_FAILURE);
+	}
+	sz = kd_res_size(kd);
+
+	if(sz < 8) {
+		return irrad;
+	}
+
+	for(i=0; i<sz; i++) {
+		struct photon *ph = kd_res_item_data(kdres);
+		irrad.x += ph->r;
+		irrad.y += ph->g;
+		irrad.z += ph->b;
+		kd_res_next(kdres);
+	}
+
+	tmp = (1.0 / PI) / (max_dist * max_dist);
+	irrad.x *= tmp;
+	irrad.y *= tmp;
+	irrad.z *= tmp;
+
+	return irrad;
+}
 
 /* Calculates direct illumination with the phong reflectance model.
  * Also handles reflections by calling trace again, if necessary.
  */
 vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 	int i, entering;
-	double fres_term;
 	vec3_t col = {0, 0, 0};
 
 	if(DOT(sp->ray.dir, sp->normal) > 0.0) {
@@ -402,9 +566,9 @@ vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 		struct sphere *iter = obj_list->next;
 		int in_shadow = 0;
 
-		ldir.x = lights[i].x - sp->pos.x;
-		ldir.y = lights[i].y - sp->pos.y;
-		ldir.z = lights[i].z - sp->pos.z;
+		ldir.x = lights[i].pos.x - sp->pos.x;
+		ldir.y = lights[i].pos.y - sp->pos.y;
+		ldir.z = lights[i].pos.z - sp->pos.z;
 
 		shadow_ray.orig = sp->pos;
 		shadow_ray.dir = ldir;
@@ -426,7 +590,6 @@ vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 			if(obj->mat.use_cook_tor) {
 				vec3_t half;
 				double ndoth, ndotv, ndotl, vdoth, ndoth_sq, sin2_ang, tan2_ang;
-				double nh_ang;
 				double geom_a, geom_b, geom;
 				double ftmp, d_mf;
 				double fres, c, g;
@@ -484,6 +647,16 @@ vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 		}
 	}
 
+	/* use the photon map */
+	if(kd) {
+		vec3_t irrad;
+
+		irrad = calc_irradiance(sp->pos, sp->normal, GATHER_DIST);
+		col.x += irrad.x;
+		col.y += irrad.y;
+		col.z += irrad.z;
+	}
+
 	/* Also, if the object is reflective, spawn a reflection ray, and call trace()
 	 * to calculate the light arriving from the mirror direction.
 	 */
@@ -505,13 +678,16 @@ vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 
 	if(obj->mat.refr > 0.0) {
 		ray_t ray;
-		vec3_t rcol;
+		vec3_t rdir, rcol;
 
 		double from_ior = entering ? 1.0 : obj->mat.ior;
 		double to_ior = entering ? obj->mat.ior : 1.0;
 
+		rdir = sp->ray.dir;
+		NORMALIZE(rdir);
+
 		ray.orig = sp->pos;
-		ray.dir = refract(sp->view, sp->normal, from_ior, to_ior);
+		ray.dir = refract(rdir, sp->normal, from_ior, to_ior);
 		ray.dir.x *= RAY_MAG;
 		ray.dir.y *= RAY_MAG;
 		ray.dir.z *= RAY_MAG;
@@ -698,7 +874,7 @@ void load_scene(FILE *fp) {
 	while((ptr = fgets(line, 256, fp))) {
 		int i;
 		vec3_t pos, col;
-		double rad, spow, refl, ior, rough;
+		double rad, spow, refl, refr, ior, rough;
 		
 		while(*ptr == ' ' || *ptr == '\t') ptr++;
 		if(*ptr == '#' || *ptr == '\n') continue;
@@ -711,13 +887,15 @@ void load_scene(FILE *fp) {
 			*((double*)&pos.x + i) = atof(ptr);
 		}
 
-		if(type == 'l') {
-			lights[lnum++] = pos;
-			continue;
-		}
-
 		if(!(ptr = strtok(0, DELIM))) continue;
 		rad = atof(ptr);
+
+		if(type == 'l') {
+			lights[lnum].pos = pos;
+			lights[lnum].radius = rad;
+			lights[lnum++].photons = photons_per_light;
+			continue;
+		}
 
 		for(i=0; i<3; i++) {
 			if(!(ptr = strtok(0, DELIM))) break;
@@ -737,9 +915,16 @@ void load_scene(FILE *fp) {
 		if(!(ptr = strtok(0, DELIM))) continue;
 		refl = atof(ptr);
 
-		if(type == 'm') {
-			if(!(ptr = strtok(0, DELIM))) continue;
+		if(!(ptr = strtok(0, DELIM))) continue;
+		refr = atof(ptr);
+
+		if(!(ptr = strtok(0, DELIM))) {
+			ior = 1.0;
+		} else {
 			ior = atof(ptr);
+		}
+
+		if(type == 'm') {
 
 			if(!(ptr = strtok(0, DELIM))) continue;
 			rough = atof(ptr);
@@ -755,7 +940,7 @@ void load_scene(FILE *fp) {
 			sph->mat.col = col;
 			sph->mat.spow = spow;
 			sph->mat.refl = refl;
-			sph->mat.refr = 0.0;
+			sph->mat.refr = refr;
 
 			sph->mat.specularity = spow;
 			sph->mat.ior = ior;
