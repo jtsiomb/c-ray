@@ -390,7 +390,7 @@ struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
 struct ray get_primary_ray(int x, int y, int sample) {
 	struct ray ray;
 	float m[3][3];
-	struct vec3 i, j = {0, 1, 0}, k, dir, orig, foo;
+	struct vec3 i, j = {0, 1, 0}, k, dir, orig = {0, 0, 0}, foo;
 
 	k.x = cam.targ.x - cam.pos.x;
 	k.y = cam.targ.y - cam.pos.y;
@@ -403,28 +403,24 @@ struct ray get_primary_ray(int x, int y, int sample) {
 	m[1][0] = i.y; m[1][1] = j.y; m[1][2] = k.y;
 	m[2][0] = i.z; m[2][1] = j.z; m[2][2] = k.z;
 	
-	ray.orig.x = ray.orig.y = ray.orig.z = 0.0;
 	ray.dir = get_sample_pos(x, y, sample);
 	ray.dir.z = 1.0 / HALF_FOV;
 	ray.dir.x *= RAY_MAG;
 	ray.dir.y *= RAY_MAG;
 	ray.dir.z *= RAY_MAG;
 	
-	dir.x = ray.dir.x + ray.orig.x;
-	dir.y = ray.dir.y + ray.orig.y;
-	dir.z = ray.dir.z + ray.orig.z;
-	foo.x = dir.x * m[0][0] + dir.y * m[0][1] + dir.z * m[0][2];
-	foo.y = dir.x * m[1][0] + dir.y * m[1][1] + dir.z * m[1][2];
-	foo.z = dir.x * m[2][0] + dir.y * m[2][1] + dir.z * m[2][2];
+	dir = ray.dir;
+	ray.dir.x = dir.x * m[0][0] + dir.y * m[0][1] + dir.z * m[0][2];
+	ray.dir.y = dir.x * m[1][0] + dir.y * m[1][1] + dir.z * m[1][2];
+	ray.dir.z = dir.x * m[2][0] + dir.y * m[2][1] + dir.z * m[2][2];
 
-	orig.x = ray.orig.x * m[0][0] + ray.orig.y * m[0][1] + ray.orig.z * m[0][2] + cam.pos.x;
-	orig.y = ray.orig.x * m[1][0] + ray.orig.y * m[1][1] + ray.orig.z * m[1][2] + cam.pos.y;
-	orig.z = ray.orig.x * m[2][0] + ray.orig.y * m[2][1] + ray.orig.z * m[2][2] + cam.pos.z;
+	ray.orig.x = orig.x * m[0][0] + orig.y * m[0][1] + orig.z * m[0][2] + cam.pos.x;
+	ray.orig.y = orig.x * m[1][0] + orig.y * m[1][1] + orig.z * m[1][2] + cam.pos.y;
+	ray.orig.z = orig.x * m[2][0] + orig.y * m[2][1] + orig.z * m[2][2] + cam.pos.z;
 
-	ray.orig = orig;
-	ray.dir.x = foo.x + orig.x;
-	ray.dir.y = foo.y + orig.y;
-	ray.dir.z = foo.z + orig.z;
+	ray.dir.x += orig.x;
+	ray.dir.y += orig.y;
+	ray.dir.z += orig.z;
 	
 	return ray;
 }

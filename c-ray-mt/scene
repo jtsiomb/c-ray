@@ -17,7 +17,7 @@ s	10005 0 0		10000	0.3 0.5 1.0			0.0		0.0		0.0
 s	0 0 10005		10000	0.7 0.7 0.7			0.0		0.0		0.0
 
 # lights...
-l	0 4.5 0			0
+l	0 4 0			0.99
 
 # camera (there can be only one!)
 #	position	FOV		target

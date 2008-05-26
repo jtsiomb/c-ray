@@ -43,7 +43,7 @@
 
 
 ; start the process...
-(generate 1.0 5 `(0 0 0) 0)			; create the thing
+(generate 1.0 4 `(0 0 0) 0)			; create the thing
 (display "s  0 -10002.25 0  10000  0.2 0.35 0.5  80.0  0.4") (newline) ; create floor
 (display "s  0  10100.00 0  10000  0.5 0.2 0.1  40.0  0.0") (newline)    ; create ceiling
 (display "l	-50 68 -50") (newline)	; and a light

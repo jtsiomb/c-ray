@@ -133,12 +133,13 @@ void sighandler(int sig);
 
 void *thread_func(void *tdata);
 
-#define LT_ENERGY		100
+#define LT_ENERGY		220
 #define GATHER_DIST		0.25
+#define MAX_PHOTON_BOUNCES	15
 
 #define MAX_LIGHTS		16				/* maximum number of lights */
 #define RAY_MAG			1000.0			/* trace rays of this magnitude */
-#define MAX_RAY_DEPTH	5				/* raytrace recursion limit */
+#define MAX_RAY_DEPTH	8				/* raytrace recursion limit */
 #define FOV				0.78539816		/* field of view in rads (pi/4) */
 #define HALF_FOV		(FOV * 0.5)
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
@@ -175,6 +176,8 @@ struct light lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
 
+int progr_ind = 0;
+
 int thread_num = 1;
 struct thread_data *threads;
 int scanlines_done;
@@ -201,6 +204,7 @@ const char *usage = {
 	"  -i <file>  read from <file> instead of stdin\n"
 	"  -o <file>  write to <file> instead of stdout\n"
 	"  -p <num>   enable photon mapping and specify number of photons per light\n"
+	"  -g         enable progress indication in stderr\n"
 	"  -h         this help screen\n\n"
 };
 
@@ -272,6 +276,10 @@ int main(int argc, char **argv) {
 					}
 				}
 				photons_per_light = atoi(argv[++i]);
+				break;
+
+			case 'g':
+				progr_ind = 1;
 				break;
 
 			case 'h':
@@ -379,15 +387,17 @@ void trace_photon(ray_t ray, float r, float g, float b, int iter)
 
 		NORMALIZE(ray.dir);
 
-		if(iter > MAX_RAY_DEPTH || rand_val > obj->mat.refl + obj->mat.refr) {
-			struct photon *p = malloc(sizeof *p);
-			p->pos = sp.pos;
-			p->dir = ray.dir;
-			p->r = r;
-			p->g = g;
-			p->b = b;
+		if(iter > MAX_PHOTON_BOUNCES || rand_val > obj->mat.refl + obj->mat.refr) {
+			if(iter > 0) {
+				struct photon *p = malloc(sizeof *p);
+				p->pos = sp.pos;
+				p->dir = ray.dir;
+				p->r = r;
+				p->g = g;
+				p->b = b;
 			
-			kd_insert(kd, p->pos.x, p->pos.y, p->pos.z, p);
+				kd_insert3(kd, p->pos.x, p->pos.y, p->pos.z, p);
+			}
 			return;
 		}
 
@@ -423,7 +433,7 @@ int photon_pass(void)
 {
 	int i, j;
 
-	if(!(kd = kd_create())) {
+	if(!(kd = kd_create(3))) {
 		return -1;
 	}
 	kd_data_destructor(kd, free);
@@ -468,6 +478,10 @@ void render_scanline(int xsz, int ysz, int sl, uint32_t *fb, int samples) {
 		fb[sl * xsz + i] = ((uint32_t)(MIN(r, 1.0) * 255.0) & 0xff) << RSHIFT |
 							((uint32_t)(MIN(g, 1.0) * 255.0) & 0xff) << GSHIFT |
 							((uint32_t)(MIN(b, 1.0) * 255.0) & 0xff) << BSHIFT;
+	}
+
+	if(progr_ind) {
+		fprintf(stderr, "finished scanline: %d\n", sl);
 	}
 }
 
@@ -521,13 +535,14 @@ vec3_t calc_irradiance(vec3_t pos, vec3_t norm, float max_dist)
 	int i, sz;
 	float tmp;
 
-	if(!(kdres = kd_nearest_range(kd, pos.x, pos.y, pos.z, max_dist))) {
+	if(!(kdres = kd_nearest_range3(kd, pos.x, pos.y, pos.z, max_dist))) {
 		fprintf(stderr, "kd_nearest_range returned 0! failed to allocate memory?\n");
 		exit(EXIT_FAILURE);
 	}
-	sz = kd_res_size(kd);
+	sz = kd_res_size(kdres);
 
 	if(sz < 8) {
+		kd_res_free(kdres);
 		return irrad;
 	}
 
@@ -538,6 +553,8 @@ vec3_t calc_irradiance(vec3_t pos, vec3_t norm, float max_dist)
 		irrad.z += ph->b;
 		kd_res_next(kdres);
 	}
+
+	kd_res_free(kdres);
 
 	tmp = (1.0 / PI) / (max_dist * max_dist);
 	irrad.x *= tmp;
@@ -566,14 +583,22 @@ vec3_t shade(struct sphere *obj, struct spoint *sp, int depth) {
 	/* for all lights ... */
 	for(i=0; i<lnum; i++) {
 		double ispec, idiff;
-		vec3_t ldir;
+		vec3_t ldir, loffs;
 		ray_t shadow_ray;
 		struct sphere *iter = obj_list->next;
 		int in_shadow = 0;
 
-		ldir.x = lights[i].pos.x - sp->pos.x;
-		ldir.y = lights[i].pos.y - sp->pos.y;
-		ldir.z = lights[i].pos.z - sp->pos.z;
+		loffs.x = loffs.y = loffs.z = 0.0f;
+		if(lights[i].radius > 0.0 && rays_per_pixel > 1) {
+			loffs.x = (double)rand() / RAND_MAX * 2.0 - 1.0;
+			loffs.y = (double)rand() / RAND_MAX * 2.0 - 1.0;
+			loffs.z = (double)rand() / RAND_MAX * 2.0 - 1.0;
+			NORMALIZE(loffs);
+		}
+
+		ldir.x = (lights[i].pos.x + loffs.x * lights[i].radius) - sp->pos.x;
+		ldir.y = (lights[i].pos.y + loffs.y * lights[i].radius) - sp->pos.y;
+		ldir.z = (lights[i].pos.z + loffs.z * lights[i].radius) - sp->pos.z;
 
 		shadow_ray.orig = sp->pos;
 		shadow_ray.dir = ldir;
