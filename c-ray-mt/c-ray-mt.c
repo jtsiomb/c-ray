@@ -535,7 +535,7 @@ vec3_t calc_irradiance(vec3_t pos, vec3_t norm, float max_dist)
 	int i, sz;
 	float tmp;
 
-	if(!(kdres = kd_nearest_range3(kd, pos.x, pos.y, pos.z, max_dist))) {
+	if(!(kdres = kd_nearest_range3f(kd, pos.x, pos.y, pos.z, max_dist))) {
 		fprintf(stderr, "kd_nearest_range returned 0! failed to allocate memory?\n");
 		exit(EXIT_FAILURE);
 	}
