@@ -15,4 +15,4 @@ l	40 40 150
 
 # camera (there can be only one!)
 #	position	FOV		target
-c	0 6 -17		45		0 -1 0
+c	0 4 -10		45		0 -1 0

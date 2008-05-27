@@ -39,6 +39,7 @@ int main(int argc, char **argv)
 	glutDisplayFunc(redraw);
 	glutKeyboardFunc(keyb);
 	glutReshapeFunc(reshape);
+	glutIdleFunc(glutPostRedisplay);
 
 	glewInit();
 
@@ -64,7 +65,17 @@ int main(int argc, char **argv)
 
 void redraw(void)
 {
+	unsigned int msec = glutGet(GLUT_ELAPSED_TIME);
+
+	float t = (float)msec / 1000.0f;
+	struct camera sv_cam = cam;
+
+	cam.pos.x = sin(t) * 12.0;
+	cam.pos.z = cos(t) * 13.0;
+
 	set_cam_matrix();
+
+	cam = sv_cam;
 
 	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, geom_tex);
