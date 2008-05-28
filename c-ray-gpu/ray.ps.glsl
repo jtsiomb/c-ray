@@ -4,6 +4,7 @@ uniform float fov, aspect;
 uniform sampler2D geom_tex;
 uniform int obj_num, geom_tex_height;
 
+#define MAX_ITER	2
 #define RAY_MAG		1000.0
 
 #define TC_PIX0		0.05
@@ -41,25 +42,36 @@ sphere get_obj(int idx);
 void main()
 {
 	vec4 col = vec4(0.0, 0.0, 0.0, 1.0);
+	float intens = 1.0;
 
 	ray r = get_primary_ray(gl_TexCoord[0].s, gl_TexCoord[0].t);
 
-	sphere nearest_obj;
-	spoint nearest_sp;
-	nearest_sp.dist = RAY_MAG;
+	for(int j=0; j<MAX_ITER; j++) {
+		sphere nearest_obj;
+		spoint nearest_sp;
+		nearest_sp.dist = RAY_MAG;
 
-	for(int i=0; i<obj_num; i++) {
-		sphere sph = get_obj(i);
+		for(int i=0; i<obj_num; i++) {
+			sphere sph = get_obj(i);
 
-		spoint sp = ray_sphere(sph, r);
-		if(sp.hit && sp.dist < nearest_sp.dist) {
-			nearest_sp = sp;
-			nearest_obj = sph;
+			spoint sp = ray_sphere(sph, r);
+			if(sp.hit && sp.dist < nearest_sp.dist) {
+				nearest_sp = sp;
+				nearest_obj = sph;
+			}
 		}
-	}
 
-	if(nearest_sp.dist < RAY_MAG) {
-		col.xyz = shade(nearest_obj, nearest_sp);
+		if(nearest_sp.dist < RAY_MAG) {
+			col.xyz += shade(nearest_obj, nearest_sp) * intens;
+		}
+
+		if(intens > 0.005 && nearest_obj.mat.refl > 0.0) {
+			r.orig = nearest_sp.pos;
+			r.dir = nearest_sp.vref * RAY_MAG;
+			intens *= nearest_obj.mat.refl;
+		} else {
+			break;
+		}
 	}
 
 	gl_FragColor = col;
@@ -137,6 +149,7 @@ vec3 shade(sphere obj, spoint sp)
 
 		col = obj.mat.col * dif + vec3(1.0, 1.0, 1.0) * spec;
 	}
+
 	return col;
 }
 

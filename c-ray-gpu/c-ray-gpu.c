@@ -28,7 +28,7 @@ int main(int argc, char **argv)
 {
 	load_scene(stdin);
 
-	glutInitWindowSize(800, 600);
+	glutInitWindowSize(640, 480);
 	glutInit(&argc, argv);
 	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
 	glutCreateWindow("GPU Ray tracing");
@@ -41,6 +41,7 @@ int main(int argc, char **argv)
 	glutReshapeFunc(reshape);
 	glutIdleFunc(glutPostRedisplay);
 
+	glewExperimental = 1;
 	glewInit();
 
 	if(!(geom_tex = create_geom_tex())) {
@@ -70,8 +71,8 @@ void redraw(void)
 	float t = (float)msec / 1000.0f;
 	struct camera sv_cam = cam;
 
-	cam.pos.x = sin(t) * 12.0;
-	cam.pos.z = cos(t) * 13.0;
+	cam.pos.x = sin(t) * 10.0;
+	cam.pos.z = cos(t) * 10.0;
 
 	set_cam_matrix();
 
