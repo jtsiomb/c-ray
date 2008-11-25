@@ -1,7 +1,8 @@
 #ifndef _SDR_H_
 #define _SDR_H_
 
-#include <vmath.h>
+#include "vmath.h"
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,7 @@ int bind_program(unsigned int prog);
 
 int set_uniform_int(unsigned int prog, const char *name, int val);
 int set_uniform_float(unsigned int prog, const char *name, float val);
+
 int set_uniform_vec2(unsigned int prog, const char *name, vec2_t val);
 int set_uniform_vec3(unsigned int prog, const char *name, vec3_t val);
 int set_uniform_vec4(unsigned int prog, const char *name, vec4_t val);

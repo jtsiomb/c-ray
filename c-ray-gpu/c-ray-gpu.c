@@ -24,6 +24,11 @@ unsigned int geom_tex;
 
 float aspect = 1.333333;
 
+static void idle(void)
+{
+	glutPostRedisplay();
+}
+
 int main(int argc, char **argv)
 {
 	load_scene(stdin);
@@ -39,7 +44,7 @@ int main(int argc, char **argv)
 	glutDisplayFunc(redraw);
 	glutKeyboardFunc(keyb);
 	glutReshapeFunc(reshape);
-	glutIdleFunc(glutPostRedisplay);
+	glutIdleFunc(idle);
 
 	glewExperimental = 1;
 	glewInit();

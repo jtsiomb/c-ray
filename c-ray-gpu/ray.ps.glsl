@@ -4,7 +4,7 @@ uniform float fov, aspect;
 uniform sampler2D geom_tex;
 uniform int obj_num, geom_tex_height;
 
-#define MAX_ITER	2
+#define MAX_ITER	3
 #define RAY_MAG		1000.0
 
 #define TC_PIX0		0.05
@@ -80,7 +80,7 @@ void main()
 
 
 #define SQ(x)	((x) * (x))
-#define ERR_MARGIN		1e-5
+#define ERR_MARGIN		1e-4
 spoint ray_sphere(sphere sph, ray r)
 {
 	float a, b, c, d, sqrt_d, t1, t2;

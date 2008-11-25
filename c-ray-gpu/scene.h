@@ -1,7 +1,7 @@
 #ifndef _SCENE_H_
 #define _SCENE_H_
 
-#include <vmath.h>
+#include "vmath.h"
 
 #define MAX_LIGHTS		16				/* maximum number of lights */
 
