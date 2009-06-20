@@ -62,8 +62,25 @@ struct material {
 struct sphere {
 	struct vec3 pos;
 	double rad;
+};
+
+struct plane {
+	struct vec3 pos;
+	struct vec3 norm;
+};
+
+#define OBJ_SPHERE		1
+#define OBJ_PLANE		2
+
+struct object {
+	int type;
+	union {
+		struct sphere sph;
+		struct plane pln;
+	} o;
 	struct material mat;
-	struct sphere *next;
+
+	struct object *next;
 };
 
 struct spoint {
@@ -78,7 +95,7 @@ struct camera {
 
 void render(int xsz, int ysz, uint32_t *fb, int samples);
 struct vec3 trace(struct ray ray, int depth);
-struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth);
+struct vec3 shade(struct object *obj, struct spoint *sp, int depth);
 struct vec3 reflect(struct vec3 v, struct vec3 n);
 struct vec3 cross_product(struct vec3 v1, struct vec3 v2);
 struct ray get_primary_ray(int x, int y, int sample);
@@ -119,7 +136,7 @@ unsigned long get_msec(void);
 int xres = 800;
 int yres = 600;
 double aspect = 1.333333;
-struct sphere *obj_list;
+struct object *obj_list;
 struct vec3 lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
@@ -140,6 +157,23 @@ const char *usage = {
 	"  -h         this help screen\n\n"
 };
 
+
+void print_obj(void)
+{
+	struct object *obj = obj_list->next;
+
+	while(obj) {
+		if(obj->type == OBJ_SPHERE) {
+			fprintf(stderr, "sphere: (%.2f %.2f %.2f) %.2f\n",
+					obj->o.sph.pos.x, obj->o.sph.pos.y, obj->o.sph.pos.z, obj->o.sph.rad);
+		} else {
+			fprintf(stderr, " plane: (%.2f %.2f %.2f) & (%.2f %.2f %.2f)\n",
+					obj->o.pln.pos.x, obj->o.pln.pos.y, obj->o.pln.pos.z,
+					obj->o.pln.norm.x, obj->o.pln.norm.y, obj->o.pln.norm.z);
+		}
+		obj = obj->next;
+	}
+}
 
 
 int main(int argc, char **argv) {
@@ -206,6 +240,7 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 	load_scene(infile);
+	print_obj();
 
 	/* initialize the random number tables for the jitter */
 	for(i=0; i<NRAN; i++) urand[i].x = (double)rand() / RAND_MAX - 0.5;
@@ -272,8 +307,8 @@ void render(int xsz, int ysz, uint32_t *fb, int samples) {
 struct vec3 trace(struct ray ray, int depth) {
 	struct vec3 col;
 	struct spoint sp, nearest_sp;
-	struct sphere *nearest_obj = 0;
-	struct sphere *iter = obj_list->next;
+	struct object *nearest_obj = 0;
+	struct object *iter = obj_list->next;
 
 	/* if we reached the recursion limit, bail out */
 	if(depth >= MAX_RAY_DEPTH) {
@@ -283,7 +318,7 @@ struct vec3 trace(struct ray ray, int depth) {
 	
 	/* find the nearest intersection ... */
 	while(iter) {
-		if(ray_sphere(iter, ray, &sp)) {
+		if(ray_object(iter, ray, &sp)) {
 			if(!nearest_obj || sp.dist < nearest_sp.dist) {
 				nearest_obj = iter;
 				nearest_sp = sp;
@@ -305,16 +340,16 @@ struct vec3 trace(struct ray ray, int depth) {
 /* Calculates direct illumination with the phong reflectance model.
  * Also handles reflections by calling trace again, if necessary.
  */
-struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
+struct vec3 shade(struct object *obj, struct spoint *sp, int depth) {
 	int i;
-	struct vec3 col = {0, 0, 0};
+	struct vec3 col = {0.05, 0.05, 0.05};
 
 	/* for all lights ... */
 	for(i=0; i<lnum; i++) {
 		double ispec, idiff;
 		struct vec3 ldir;
 		struct ray shadow_ray;
-		struct sphere *iter = obj_list->next;
+		struct object *iter = obj_list->next;
 		int in_shadow = 0;
 
 		ldir.x = lights[i].x - sp->pos.x;
@@ -326,7 +361,7 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 
 		/* shoot shadow rays to determine if we have a line of sight with the light */
 		while(iter) {
-			if(ray_sphere(iter, shadow_ray, 0)) {
+			if(ray_object(iter, shadow_ray, 0)) {
 				in_shadow = 1;
 				break;
 			}
@@ -428,15 +463,18 @@ struct ray get_primary_ray(int x, int y, int sample) {
 
 struct vec3 get_sample_pos(int x, int y, int sample) {
 	struct vec3 pt;
-	double xsz = 2.0, ysz = xres / aspect;
 	static double sf = 0.0;
 
 	if(sf == 0.0) {
 		sf = 1.5 / (double)xres;
 	}
 
+	/*
 	pt.x = ((double)x / (double)xres) - 0.5;
 	pt.y = -(((double)y / (double)yres) - 0.65) / aspect;
+	*/
+	pt.x = ((double)x / (double)xres - 0.5) * 2.0 * aspect;
+	pt.y = (0.5 - (double)y / (double)yres) * 2.0;
 
 	if(sample) {
 		struct vec3 jt = jitter(x, y, sample);
@@ -452,6 +490,20 @@ struct vec3 jitter(int x, int y, int s) {
 	pt.x = urand[(x + (y << 2) + irand[(x + s) & MASK]) & MASK].x;
 	pt.y = urand[(y + (x << 2) + irand[(y + s) & MASK]) & MASK].y;
 	return pt;
+}
+
+int ray_object(const struct object *obj, struct ray ray, struct spoint *sp) {
+	switch(obj->type) {
+	case OBJ_SPHERE:
+		return ray_sphere(&obj->o.sph, ray, sp);
+
+	case OBJ_PLANE:
+		return ray_plane(&obj->o.pln, ray, sp);
+
+	default:
+		break;
+	}
+	return 0;
 }
 
 /* Calculate ray-sphere intersection, and return {1, 0} to signify hit or no hit.
@@ -475,7 +527,9 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 	t1 = (-b + sqrt_d) / (2.0 * a);
 	t2 = (-b - sqrt_d) / (2.0 * a);
 
-	if((t1 < ERR_MARGIN && t2 < ERR_MARGIN) || (t1 > 1.0 && t2 > 1.0)) return 0;
+	if((t1 < ERR_MARGIN && t2 < ERR_MARGIN) || (t1 > 1.0 && t2 > 1.0)) {
+		return 0;
+	}
 
 	if(sp) {
 		if(t1 < ERR_MARGIN) t1 = t2;
@@ -496,18 +550,54 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 	return 1;
 }
 
+/* calculate ray-plane intersection... etc */
+int ray_plane(const struct plane *pln, struct ray ray, struct spoint *sp) {
+	struct vec3 to_orig;
+	double t;
+
+	if(fabs(DOT(pln->norm, ray.dir)) < ERR_MARGIN) {
+		return 0;
+	}
+
+	to_orig.x = ray.orig.x - pln->pos.x;
+	to_orig.y = ray.orig.y - pln->pos.y;
+	to_orig.z = ray.orig.z - pln->pos.z;
+	t = -DOT(pln->norm, to_orig) / DOT(pln->norm, ray.dir);
+
+	if(t < ERR_MARGIN || t > 1.0) {
+		return 0;
+	}
+
+	if(sp) {
+		sp->dist = t;
+
+		sp->pos.x = ray.orig.x + ray.dir.x * t;
+		sp->pos.y = ray.orig.y + ray.dir.y * t;
+		sp->pos.z = ray.orig.z + ray.dir.z * t;
+
+		sp->normal.x = pln->norm.x;
+		sp->normal.y = pln->norm.y;
+		sp->normal.z = pln->norm.z;
+
+		sp->vref = reflect(ray.dir, sp->normal);
+		NORMALIZE(sp->vref);
+	}
+	return 1;
+}
+
 /* Load the scene from an extremely simple scene description file */
 #define DELIM	" \t\n"
 void load_scene(FILE *fp) {
 	char line[256], *ptr, type;
 
-	obj_list = malloc(sizeof(struct sphere));
+	obj_list = malloc(sizeof *obj_list);
 	obj_list->next = 0;
 	
 	while((ptr = fgets(line, 256, fp))) {
 		int i;
-		struct vec3 pos, col;
+		struct vec3 pos, norm, col;
 		double rad, spow, refl;
+		struct object *obj;
 		
 		while(*ptr == ' ' || *ptr == '\t') ptr++;
 		if(*ptr == '#' || *ptr == '\n') continue;
@@ -546,18 +636,38 @@ void load_scene(FILE *fp) {
 		if(!(ptr = strtok(0, DELIM))) continue;
 		refl = atof(ptr);
 
-		if(type == 's') {
-			struct sphere *sph = malloc(sizeof *sph);
-			sph->next = obj_list->next;
-			obj_list->next = sph;
+		obj = malloc(sizeof *obj);
 
-			sph->pos = pos;
-			sph->rad = rad;
-			sph->mat.col = col;
-			sph->mat.spow = spow;
-			sph->mat.refl = refl;
+		obj->mat.col = col;
+		obj->mat.spow = spow;
+		obj->mat.refl = refl;
+
+		if(type == 's') {
+			obj->type = OBJ_SPHERE;
+			obj->o.sph.pos = pos;
+			obj->o.sph.rad = rad;
+
+			obj->next = obj_list->next;
+			obj_list->next = obj;
+			continue;
+		}
+
+		for(i=0; i<3; i++) {
+			if(!(ptr = strtok(0, DELIM))) break;
+			*((double*)&norm.x + i) = atof(ptr);
+		}
+		NORMALIZE(norm);
+
+		if(type == 'p') {
+			obj->type = OBJ_PLANE;
+			obj->o.pln.pos = pos;
+			obj->o.pln.norm = norm;
+
+			obj->next = obj_list->next;
+			obj_list->next = obj;
 		} else {
 			fprintf(stderr, "unknown type: %c\n", type);
+			free(obj);
 		}
 	}
 }
