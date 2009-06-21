@@ -3,20 +3,20 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
-#include <SDL.h>
+#include <errno.h>
+#include <limits.h>
+#include <float.h>
+#include <alloc.h>
+#include "gfx.h"
+#include "color.h"
+#include "log.h"
 
-#if defined(unix) || defined(__unix__)
-#include <unistd.h>
-#define msleep(x)	usleep((x) * 1000);
-#else
-#include <windows.h>
-#define msleep(x)	Sleep(x)
-#endif
-
-#include <sys/types.h>
+typedef unsigned long uint32_t;
+typedef unsigned short uint16_t;
+typedef unsigned char uint8_t;
 
 struct vec3 {
-	double x, y, z;
+	float x, y, z;
 };
 
 struct ray {
@@ -25,78 +25,98 @@ struct ray {
 
 struct material {
 	struct vec3 col;	/* color */
-	double spow;		/* specular power */
-	double refl;		/* reflection intensity */
+	float spow;		/* specular power */
+	float refl;		/* reflection intensity */
 };
 
 struct sphere {
 	struct vec3 pos;
-	double rad;
+	float rad;
+};
+
+struct plane {
+	struct vec3 pos;
+	struct vec3 norm;
+};
+
+#define OBJ_SPHERE		1
+#define OBJ_PLANE		2
+
+struct object {
+	int type;
+	union {
+		struct sphere sph;
+		struct plane pln;
+	} o;
 	struct material mat;
-	struct sphere *next;
+
+	struct object *next;
 };
 
 struct spoint {
 	struct vec3 pos, normal, vref;	/* position, normal and view reflection */
-	double dist;		/* parametric distance of intersection along the ray */
+	float dist;		/* parametric distance of intersection along the ray */
 };
 
 struct camera {
 	struct vec3 pos, targ;
-	double fov;
+	float fov;
 };
 
-void render(int xsz, int ysz, uint32_t *fb);
+void render(int xsz, int ysz, uint8_t far *fb);
 struct vec3 trace(struct ray ray, int depth);
-struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth);
+struct vec3 shade(struct object *obj, struct spoint *sp, int depth);
 struct vec3 reflect(struct vec3 v, struct vec3 n);
 struct vec3 cross_product(struct vec3 v1, struct vec3 v2);
 struct ray get_primary_ray(int x, int y);
+struct vec3 get_sample_pos(int x, int y);
 int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp);
-void load_scene(const char *fname);
+void load_scene(FILE *fp);
 
 #define MAX_LIGHTS		16				/* maximum number of lights */
-#define INTERVAL		33				/* minimum frame update interval */
 #define RAY_MAG			1000.0			/* trace rays of this magnitude */
-#define MAX_RAY_DEPTH	5				/* raytrace recursion limit */
+#define MAX_RAY_DEPTH	4				/* raytrace recursion limit */
 #define FOV				0.78539816		/* field of view in rads (pi/4) */
 #define HALF_FOV		(FOV * 0.5)
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
 
-/* bit-shift ammount for packing each color into a 32bit uint */
-#if defined(__mips__) || defined(__PowerPC__)
-#define RSHIFT	0
-#define BSHIFT	16
-#else	/* little endian */
-#define RSHIFT	16
-#define BSHIFT	0
-#endif	/* endianess */
-#define GSHIFT	8	/* this is the same in both byte orders */
-
 /* some helpful macros... */
 #define SQ(x)		((x) * (x))
 #define MAX(a, b)	((a) > (b) ? (a) : (b))
+#define MIN(a, b)	((a) < (b) ? (a) : (b))
 #define DOT(a, b)	((a).x * (b).x + (a).y * (b).y + (a).z * (b).z)
 #define NORMALIZE(a)  do {\
-	double len = sqrt(DOT(a, a));\
+	float len = sqrt(DOT(a, a));\
 	(a).x /= len; (a).y /= len; (a).z /= len;\
 } while(0);
 
 /* global state */
-int xres = 400;
-int yres = 300;
-double aspect = 1.333333;
-struct sphere *obj_list;
+int xres = 320;
+int yres = 200;
+float aspect;
+struct object *obj_list;
 struct vec3 lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
-unsigned long start_time;
+
+const char *usage = {
+	"Usage: c-ray-f [options]\n"
+	"  Reads a scene file from stdin, writes the image to stdout, and stats to stderr.\n\n"
+	"Options:\n"
+	"  -s WxH     where W is the width and H the height of the image\n"
+	"  -i <file>  read from <file> instead of stdin\n"
+	"  -o <file>  write to <file> instead of stdout\n"
+	"  -h         this help screen\n\n"
+};
+
 
 int main(int argc, char **argv) {
-	SDL_Surface *fbsurf;
-	SDL_Event event;
-	int i, fullscreen = 0, limit_fps = 1;
-	unsigned long frames = 0;
+	int i;
+	unsigned long rend_time, start_time;
+	uint8_t far *pixels;
+	FILE *infile = stdin;
+
+	logfoo("starting c-ray16\n");
 
 	for(i=1; i<argc; i++) {
 		if(argv[i][0] == '-' && argv[i][2] == 0) {
@@ -104,112 +124,145 @@ int main(int argc, char **argv) {
 			switch(argv[i][1]) {
 			case 's':
 				if(!isdigit(argv[++i][0]) || !(sep = strchr(argv[i], 'x')) || !isdigit(*(sep + 1))) {
-					fprintf(stderr, "-s must be followed by something like \"640x480\"\n");
-					return EXIT_FAILURE;
+					fputs("-s must be followed by something like \"640x480\"\n", stderr);
+					return 1;
 				}
 				xres = atoi(argv[i]);
 				yres = atoi(sep + 1);
-				aspect = (double)xres / (double)yres;
 				break;
 
-			case 'f':
-				fullscreen = 1;
+			case 'i':
+				if(!(infile = fopen(argv[++i], "rb"))) {
+					fprintf(stderr, "failed to open input file %s: %s\n", argv[i], strerror(errno));
+					return 1;
+				}
 				break;
 
-			case 'l':
-				limit_fps = !limit_fps;
-				break;
-			}
-		}
-	}
-
-	/* initialize SDL */
-	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
-	if(!(fbsurf = SDL_SetVideoMode(xres, yres, 32, SDL_SWSURFACE | (fullscreen ? SDL_FULLSCREEN : 0)))) {
-		fprintf(stderr, "Could not initialize SDL\n");
-		return EXIT_FAILURE;
-	}
-	SDL_WM_SetCaption("Simple ray tracer", 0);
-	if(fullscreen) SDL_ShowCursor(0);
-
-	/* load the scene */
-	load_scene("scene");
-	start_time = SDL_GetTicks();
-
-	while(1) {
-		if(SDL_PollEvent(&event)) {
-			if(event.type == SDL_QUIT || (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)) {
-				break;
+			case 'h':
+				fputs(usage, stdout);
+				return 0;
+				
+			default:
+				fprintf(stderr, "unrecognized argument: %s\n", argv[i]);
+				fputs(usage, stderr);
+				return 1;
 			}
 		} else {
-			/* If no events are pending, recalculate the graphics, but also enforce
-			 * an upper framerate limit to avoid eating up CPU time unnecessarily.
-			 */
-			static unsigned int prev_time;
-			unsigned int frame_time, cur_time;
-			
-			if(SDL_MUSTLOCK(fbsurf)) SDL_LockSurface(fbsurf);
-			render(xres, yres, (uint32_t*)fbsurf->pixels);
-			if(SDL_MUSTLOCK(fbsurf)) SDL_UnlockSurface(fbsurf);
-			SDL_Flip(fbsurf);
-			frames++;
-
-			cur_time = SDL_GetTicks() - start_time;
-			if(limit_fps) {
-				frame_time = cur_time - prev_time;
-				if(frame_time < INTERVAL) {
-					msleep(INTERVAL - frame_time);
-				}
-			}
-			prev_time = cur_time;
+			fprintf(stderr, "unrecognized argument: %s\n", argv[i]);
+			fputs(usage, stderr);
+			return 1;
 		}
 	}
 
-	if(fullscreen) SDL_ShowCursor(1);
-	SDL_Quit();
+	aspect = (float)xres / (float)yres;
 
-	{
-		double running = (double)(SDL_GetTicks() - start_time) / 1000.0;
-		double fps = (double)frames / (double)running;	
-		printf("running time: %f sec, frames rendered: %lu, fps: %f\n", running, frames, fps);
+	/*
+	if(!(pixels = malloc(xres * yres * sizeof *pixels))) {
+		perror("pixel buffer allocation failed");
+		return 1;
 	}
-	
+	*/
+
+	load_scene(infile);
+	if(infile != stdin) fclose(infile);
+
+	logfoo("initializing graphics: %dx%d 8bpp\n", xres, yres);
+	if(set_video_mode(xres, yres, 8) == -1) {
+		return 1;
+	}
+
+	init_palette();
+
+	logfoo("starting rendering\n");
+	render(xres, yres, vidmem);
+	logfoo("rendering done\n");
+
+	for(;;) {
+		char c = getch();
+
+		if(c == 'q' || c == 27) break;
+		if(c == 'o') optimize();
+	}
+
+	logfoo("restoring text mode\n");
+	restore_vga();
 	return 0;
 }
 
-/* render a frame of xsz/ysz dimensions into the provided framebuffer */
-void render(int xsz, int ysz, uint32_t *fb) {
-	int i, j;
-	unsigned long time = SDL_GetTicks() - start_time;
-	double t = (double)time / 1000.0;
+/*
+void render(int xsz, int ysz, uint8_t far *fb) {
+	int i, j, x, y;
+	uint8_t far *ptr;
 
-	/* perform some crude animation */
-	double y = obj_list->next->pos.y;
-	obj_list->next->pos.y = obj_list->next->pos.y + fabs(sin(t));
-	lights[1].z = sin(t) * 400.0;
-	lights[1].x = cos(t * 0.5) * 400.0;
+	for(i=0; i<SCAN_SKIP; i++) {
+		for(y=i; y<ysz; y+=SCAN_SKIP) {
+			ptr = fb + y * 320;
 
-	cam.pos.x = sin(t * 0.3) * 17;
-	cam.pos.z = -cos(t * 0.3) * 17;
-	cam.pos.y = sin(t * 0.6) * 2 + 4;
-	
-	/* for each pixel, trace a ray through the scene, then pack the color
-	 * and put it into the framebuffer. (assumes contiguous scanlines).
-	 */
-	for(j=0; j<ysz; j++) {
-		for(i=0; i<xsz; i++) {
-			struct vec3 col = trace(get_primary_ray(i, j), 0);
-			if(col.x > 1.0) col.x = 1.0;
-			if(col.y > 1.0) col.y = 1.0;
-			if(col.z > 1.0) col.z = 1.0;
-			
-			*fb++ = (uint8_t)(col.x * 255.0) << RSHIFT |
-					(uint8_t)(col.y * 255.0) << GSHIFT |
-					(uint8_t)(col.z * 255.0) << BSHIFT;
+			for(x=0; x<xsz; x++) {
+				int cr, cg, cb;
+				struct vec3 col = trace(get_primary_ray(x, y), 0);
+
+				cr = (int)(col.x * 255.0);
+				cg = (int)(col.y * 255.0);
+				cb = (int)(col.z * 255.0);
+
+				*ptr++ = alloc_color(cr, cg, cb);
+			}
+
+			while(kbhit()) {
+				if(getch() == 27) {
+					return;
+				}
+			}
 		}
 	}
+}
+*/
 
-	obj_list->next->pos.y = y;
+#define SCAN_SKIP	8
+void render(int xsz, int ysz, uint8_t far *fb) {
+	int i, j, x, y;
+	uint8_t far *ptr;
+
+	int pitch = xsz;
+	int xinc = 1;
+	int planes = 1;
+
+	if(xsz == 320 && ysz == 240) {	/* mode x */
+		pitch >>= 2;
+		xinc = 4;
+		planes = 4;
+	}
+
+	for(i=0; i<SCAN_SKIP; i++) {
+		for(j=0; j<planes; j++) {
+			if(planes > 1) {
+				set_plane_mask(1 << j);
+			}
+
+			for(y=i; y<ysz; y+=SCAN_SKIP) {
+				ptr = fb + y * pitch;
+
+				for(x=j; x<xsz; x+=xinc) {
+					int cr, cg, cb;
+					struct vec3 col = trace(get_primary_ray(x, y), 0);
+
+					cr = (int)(col.x * 255.0);
+					cg = (int)(col.y * 255.0);
+					cb = (int)(col.z * 255.0);
+
+					*ptr++ = alloc_color(cr, cg, cb);
+				}
+			}
+
+			/* TODO use interrupts to avoid polling */
+			while(kbhit()) {
+				if(getch() == 27) {
+					return;
+				}
+			}
+		}
+	}
 }
 
 /* trace a ray throught the scene recursively (the recursion happens through
@@ -218,8 +271,8 @@ void render(int xsz, int ysz, uint32_t *fb) {
 struct vec3 trace(struct ray ray, int depth) {
 	struct vec3 col;
 	struct spoint sp, nearest_sp;
-	struct sphere *nearest_obj = 0;
-	struct sphere *iter = obj_list->next;
+	struct object *nearest_obj = 0;
+	struct object *iter = obj_list->next;
 
 	/* if we reached the recursion limit, bail out */
 	if(depth >= MAX_RAY_DEPTH) {
@@ -229,7 +282,7 @@ struct vec3 trace(struct ray ray, int depth) {
 	
 	/* find the nearest intersection ... */
 	while(iter) {
-		if(ray_sphere(iter, ray, &sp)) {
+		if(ray_object(iter, ray, &sp)) {
 			if(!nearest_obj || sp.dist < nearest_sp.dist) {
 				nearest_obj = iter;
 				nearest_sp = sp;
@@ -251,16 +304,16 @@ struct vec3 trace(struct ray ray, int depth) {
 /* Calculates direct illumination with the phong reflectance model.
  * Also handles reflections by calling trace again, if necessary.
  */
-struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
+struct vec3 shade(struct object *obj, struct spoint *sp, int depth) {
 	int i;
-	struct vec3 col = {0, 0, 0};
+	struct vec3 col = {0.05, 0.05, 0.05};
 
 	/* for all lights ... */
 	for(i=0; i<lnum; i++) {
-		double ispec, idiff;
+		float ispec, idiff;
 		struct vec3 ldir;
 		struct ray shadow_ray;
-		struct sphere *iter = obj_list->next;
+		struct object *iter = obj_list->next;
 		int in_shadow = 0;
 
 		ldir.x = lights[i].x - sp->pos.x;
@@ -272,7 +325,7 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 
 		/* shoot shadow rays to determine if we have a line of sight with the light */
 		while(iter) {
-			if(ray_sphere(iter, shadow_ray, 0)) {
+			if(ray_object(iter, shadow_ray, 0)) {
 				in_shadow = 1;
 				break;
 			}
@@ -314,9 +367,10 @@ struct vec3 shade(struct sphere *obj, struct spoint *sp, int depth) {
 	return col;
 }
 
+/* calculate reflection vector */
 struct vec3 reflect(struct vec3 v, struct vec3 n) {
 	struct vec3 res;
-	double dot = v.x * n.x + v.y * n.y + v.z * n.z;
+	float dot = v.x * n.x + v.y * n.y + v.z * n.z;
 	res.x = -(2.0 * dot * n.x - v.x);
 	res.y = -(2.0 * dot * n.y - v.y);
 	res.z = -(2.0 * dot * n.z - v.z);
@@ -335,7 +389,7 @@ struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
 struct ray get_primary_ray(int x, int y) {
 	struct ray ray;
 	float m[3][3];
-	struct vec3 i, j = {0, 1, 0}, k, dir, orig, foo;
+	struct vec3 i, j = {0, 1, 0}, k, dir, orig = {0, 0, 0};
 
 	k.x = cam.targ.x - cam.pos.x;
 	k.y = cam.targ.y - cam.pos.y;
@@ -348,31 +402,54 @@ struct ray get_primary_ray(int x, int y) {
 	m[1][0] = i.y; m[1][1] = j.y; m[1][2] = k.y;
 	m[2][0] = i.z; m[2][1] = j.z; m[2][2] = k.z;
 	
-	ray.orig.x = ray.orig.y = ray.orig.z = 0.0;
-	ray.dir.x = ((double)x / (double)xres) - 0.5;
-	ray.dir.y = -(((double)y / (double)yres) - 0.65) / aspect;
+	ray.dir = get_sample_pos(x, y);
 	ray.dir.z = 1.0 / HALF_FOV;
 	ray.dir.x *= RAY_MAG;
 	ray.dir.y *= RAY_MAG;
 	ray.dir.z *= RAY_MAG;
 	
-	dir.x = ray.dir.x + ray.orig.x;
-	dir.y = ray.dir.y + ray.orig.y;
-	dir.z = ray.dir.z + ray.orig.z;
-	foo.x = dir.x * m[0][0] + dir.y * m[0][1] + dir.z * m[0][2];
-	foo.y = dir.x * m[1][0] + dir.y * m[1][1] + dir.z * m[1][2];
-	foo.z = dir.x * m[2][0] + dir.y * m[2][1] + dir.z * m[2][2];
+	dir = ray.dir;
+	ray.dir.x = dir.x * m[0][0] + dir.y * m[0][1] + dir.z * m[0][2];
+	ray.dir.y = dir.x * m[1][0] + dir.y * m[1][1] + dir.z * m[1][2];
+	ray.dir.z = dir.x * m[2][0] + dir.y * m[2][1] + dir.z * m[2][2];
 
-	orig.x = ray.orig.x * m[0][0] + ray.orig.y * m[0][1] + ray.orig.z * m[0][2] + cam.pos.x;
-	orig.y = ray.orig.x * m[1][0] + ray.orig.y * m[1][1] + ray.orig.z * m[1][2] + cam.pos.y;
-	orig.z = ray.orig.x * m[2][0] + ray.orig.y * m[2][1] + ray.orig.z * m[2][2] + cam.pos.z;
+	ray.orig.x = orig.x * m[0][0] + orig.y * m[0][1] + orig.z * m[0][2] + cam.pos.x;
+	ray.orig.y = orig.x * m[1][0] + orig.y * m[1][1] + orig.z * m[1][2] + cam.pos.y;
+	ray.orig.z = orig.x * m[2][0] + orig.y * m[2][1] + orig.z * m[2][2] + cam.pos.z;
 
-	ray.orig = orig;
-	ray.dir.x = foo.x + orig.x;
-	ray.dir.y = foo.y + orig.y;
-	ray.dir.z = foo.z + orig.z;
+	ray.dir.x += orig.x;
+	ray.dir.y += orig.y;
+	ray.dir.z += orig.z;
 	
 	return ray;
+}
+
+
+struct vec3 get_sample_pos(int x, int y) {
+	struct vec3 pt;
+	static float sf = 0.0;
+
+	if(sf == 0.0) {
+		sf = 1.5 / (float)xres;
+	}
+
+	pt.x = ((float)x / (float)xres - 0.5) * 2.0 * aspect;
+	pt.y = (0.5 - (float)y / (float)yres) * 2.0;
+	return pt;
+}
+
+int ray_object(const struct object *obj, struct ray ray, struct spoint *sp) {
+	switch(obj->type) {
+	case OBJ_SPHERE:
+		return ray_sphere(&obj->o.sph, ray, sp);
+
+	case OBJ_PLANE:
+		return ray_plane(&obj->o.pln, ray, sp);
+
+	default:
+		break;
+	}
+	return 0;
 }
 
 /* Calculate ray-sphere intersection, and return {1, 0} to signify hit or no hit.
@@ -380,7 +457,7 @@ struct ray get_primary_ray(int x, int y) {
  * the sp pointer if it is not NULL.
  */
 int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
-	double a, b, c, d, sqrt_d, t1, t2;
+	float a, b, c, d, sqrt_d, t1, t2;
 	
 	a = SQ(ray.dir.x) + SQ(ray.dir.y) + SQ(ray.dir.z);
 	b = 2.0 * ray.dir.x * (ray.orig.x - sph->pos.x) +
@@ -396,7 +473,9 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 	t1 = (-b + sqrt_d) / (2.0 * a);
 	t2 = (-b - sqrt_d) / (2.0 * a);
 
-	if((t1 < ERR_MARGIN && t2 < ERR_MARGIN) || (t1 > 1.0 && t2 > 1.0)) return 0;
+	if((t1 < ERR_MARGIN && t2 < ERR_MARGIN) || (t1 > 1.0 && t2 > 1.0)) {
+		return 0;
+	}
 
 	if(sp) {
 		if(t1 < ERR_MARGIN) t1 = t2;
@@ -417,19 +496,56 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 	return 1;
 }
 
+/* calculate ray-plane intersection... etc */
+int ray_plane(const struct plane *pln, struct ray ray, struct spoint *sp) {
+	struct vec3 to_orig;
+	float t;
+
+	if(fabs(DOT(pln->norm, ray.dir)) < ERR_MARGIN) {
+		return 0;
+	}
+
+	to_orig.x = ray.orig.x - pln->pos.x;
+	to_orig.y = ray.orig.y - pln->pos.y;
+	to_orig.z = ray.orig.z - pln->pos.z;
+	t = -DOT(pln->norm, to_orig) / DOT(pln->norm, ray.dir);
+
+	if(t < ERR_MARGIN || t > 1.0) {
+		return 0;
+	}
+
+	if(sp) {
+		sp->dist = t;
+
+		sp->pos.x = ray.orig.x + ray.dir.x * t;
+		sp->pos.y = ray.orig.y + ray.dir.y * t;
+		sp->pos.z = ray.orig.z + ray.dir.z * t;
+
+		sp->normal.x = pln->norm.x;
+		sp->normal.y = pln->norm.y;
+		sp->normal.z = pln->norm.z;
+
+		sp->vref = reflect(ray.dir, sp->normal);
+		NORMALIZE(sp->vref);
+	}
+	return 1;
+}
+
 /* Load the scene from an extremely simple scene description file */
 #define DELIM	" \t\n"
-void load_scene(const char *fname) {
+void load_scene(FILE *fp) {
 	char line[256], *ptr, type;
-	FILE *fp = fopen(fname, "r");
 
-	obj_list = malloc(sizeof(struct sphere));
+	logfoo("loading scene file\n");
+
+	obj_list = malloc(sizeof *obj_list);
 	obj_list->next = 0;
 	
 	while((ptr = fgets(line, 256, fp))) {
 		int i;
-		struct vec3 pos, col;
-		double rad, spow, refl;
+		struct vec3 pos, norm, col;
+		float rad, spow, refl;
+		struct object *obj;
 		
 		while(*ptr == ' ' || *ptr == '\t') ptr++;
 		if(*ptr == '#' || *ptr == '\n') continue;
@@ -439,7 +555,7 @@ void load_scene(const char *fname) {
 		
 		for(i=0; i<3; i++) {
 			if(!(ptr = strtok(0, DELIM))) break;
-			*((double*)&pos.x + i) = atof(ptr);
+			*((float*)&pos.x + i) = atof(ptr);
 		}
 
 		if(type == 'l') {
@@ -452,7 +568,7 @@ void load_scene(const char *fname) {
 
 		for(i=0; i<3; i++) {
 			if(!(ptr = strtok(0, DELIM))) break;
-			*((double*)&col.x + i) = atof(ptr);
+			*((float*)&col.x + i) = atof(ptr);
 		}
 
 		if(type == 'c') {
@@ -468,20 +584,38 @@ void load_scene(const char *fname) {
 		if(!(ptr = strtok(0, DELIM))) continue;
 		refl = atof(ptr);
 
-		if(type == 's') {
-			struct sphere *sph = malloc(sizeof *sph);
-			sph->next = obj_list->next;
-			obj_list->next = sph;
+		obj = malloc(sizeof *obj);
 
-			sph->pos = pos;
-			sph->rad = rad;
-			sph->mat.col = col;
-			sph->mat.spow = spow;
-			sph->mat.refl = refl;
+		obj->mat.col = col;
+		obj->mat.spow = spow;
+		obj->mat.refl = refl;
+
+		if(type == 's') {
+			obj->type = OBJ_SPHERE;
+			obj->o.sph.pos = pos;
+			obj->o.sph.rad = rad;
+
+			obj->next = obj_list->next;
+			obj_list->next = obj;
+			continue;
+		}
+
+		for(i=0; i<3; i++) {
+			if(!(ptr = strtok(0, DELIM))) break;
+			*((float*)&norm.x + i) = atof(ptr);
+		}
+		NORMALIZE(norm);
+
+		if(type == 'p') {
+			obj->type = OBJ_PLANE;
+			obj->o.pln.pos = pos;
+			obj->o.pln.norm = norm;
+
+			obj->next = obj_list->next;
+			obj_list->next = obj;
 		} else {
 			fprintf(stderr, "unknown type: %c\n", type);
+			free(obj);
 		}
 	}
-
-	fclose(fp);
 }
