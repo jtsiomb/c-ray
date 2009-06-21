@@ -104,13 +104,12 @@ uint16_t far * far *scanline;
 
 
 const char *usage = {
-	"Usage: c-ray-f [options]\n"
-	"  Reads a scene file from stdin, writes the image to stdout, and stats to stderr.\n\n"
+	"Usage: cray16 [options]\n"
 	"Options:\n"
 	"  -s WxH     where W is the width and H the height of the image\n"
 	"  -i <file>  read from <file> instead of stdin\n"
-	"  -o <file>  write to <file> instead of stdout\n"
 	"  -h         this help screen\n\n"
+	"Note: at the moment the only valid resolutions are: 320x240 and 320x200\n\n"
 };
 
 
