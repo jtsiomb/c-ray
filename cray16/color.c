@@ -21,7 +21,7 @@ static int free_col_idx = 0;
 
 void init_palette(void)
 {
-	int i;
+	unsigned int i;
 
 	logfoo("setting up fixed palette\n");
 
@@ -64,8 +64,11 @@ int alloc_color(int r, int g, int b)
 	return idx;
 }
 
-void optimize(void)
+void lookup_color(int idx, int *r, int *g, int *b)
 {
+	*r = palette[idx].r;
+	*g = palette[idx].g;
+	*b = palette[idx].b;
 }
 
 static int find_color(int r, int g, int b)

@@ -3,6 +3,6 @@
 
 void init_palette(void);
 int alloc_color(int r, int g, int b);
-void optimize(void);
+void lookup_color(int idx, int *r, int *g, int *b);
 
 #endif	/* COLOR_H_ */

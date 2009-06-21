@@ -6,6 +6,10 @@ CC = tcc
 # 286 instructions, large memory model
 CFLAGS = -1 -f287 -G
 
+all:
+	del $(bin)
+	$(MAKE) $(bin)
+
 $(bin): $(obj)
 	$(CC) $(obj)
 

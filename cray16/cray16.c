@@ -64,6 +64,7 @@ struct camera {
 };
 
 void render(int xsz, int ysz, uint8_t far *fb);
+void dither(void);
 struct vec3 trace(struct ray ray, int depth);
 struct vec3 shade(struct object *obj, struct spoint *sp, int depth);
 struct vec3 reflect(struct vec3 v, struct vec3 n);
@@ -92,12 +93,15 @@ void load_scene(FILE *fp);
 
 /* global state */
 int xres = 320;
-int yres = 200;
+int yres = 240;
 float aspect;
 struct object *obj_list;
 struct vec3 lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
+
+uint16_t far * far *scanline;
+
 
 const char *usage = {
 	"Usage: c-ray-f [options]\n"
@@ -156,6 +160,17 @@ int main(int argc, char **argv) {
 
 	aspect = (float)xres / (float)yres;
 
+	if(!(scanline = farmalloc(yres * sizeof *scanline))) {
+		perror("malloc failed");
+		return 1;
+	}
+	for(i=0; i<yres; i++) {
+		if(!(scanline[i] = farmalloc(xres * sizeof *scanline[i]))) {
+			perror("malloc failed");
+			return 1;
+		}
+	}
+
 	/*
 	if(!(pixels = malloc(xres * yres * sizeof *pixels))) {
 		perror("pixel buffer allocation failed");
@@ -181,43 +196,13 @@ int main(int argc, char **argv) {
 		char c = getch();
 
 		if(c == 'q' || c == 27) break;
-		if(c == 'o') optimize();
+		if(c == 'd') dither();
 	}
 
 	logfoo("restoring text mode\n");
 	restore_vga();
 	return 0;
 }
-
-/*
-void render(int xsz, int ysz, uint8_t far *fb) {
-	int i, j, x, y;
-	uint8_t far *ptr;
-
-	for(i=0; i<SCAN_SKIP; i++) {
-		for(y=i; y<ysz; y+=SCAN_SKIP) {
-			ptr = fb + y * 320;
-
-			for(x=0; x<xsz; x++) {
-				int cr, cg, cb;
-				struct vec3 col = trace(get_primary_ray(x, y), 0);
-
-				cr = (int)(col.x * 255.0);
-				cg = (int)(col.y * 255.0);
-				cb = (int)(col.z * 255.0);
-
-				*ptr++ = alloc_color(cr, cg, cb);
-			}
-
-			while(kbhit()) {
-				if(getch() == 27) {
-					return;
-				}
-			}
-		}
-	}
-}
-*/
 
 #define SCAN_SKIP	8
 void render(int xsz, int ysz, uint8_t far *fb) {
@@ -244,14 +229,24 @@ void render(int xsz, int ysz, uint8_t far *fb) {
 				ptr = fb + y * pitch;
 
 				for(x=j; x<xsz; x+=xinc) {
-					int cr, cg, cb;
+					unsigned int cr, cg, cb;
 					struct vec3 col = trace(get_primary_ray(x, y), 0);
 
-					cr = (int)(col.x * 255.0);
-					cg = (int)(col.y * 255.0);
-					cb = (int)(col.z * 255.0);
+					cr = (unsigned int)(col.x * 255.0);
+					cg = (unsigned int)(col.y * 255.0);
+					cb = (unsigned int)(col.z * 255.0);
 
-					*ptr++ = alloc_color(cr, cg, cb);
+					if(cr > 255) cr = 255;
+					if(cg > 255) cg = 255;
+					if(cb > 255) cb = 255;
+
+					scanline[y][x] = ((cr << 8) & 0xf800) | ((cg << 3) & 0x7e0) |
+						((cb >> 3) & 0x1f);
+					/**ptr++ = alloc_color(cr, cg, cb);*/
+					/**ptr++ = (cr & 0xe0) | ((cg >> 3) & 0x1c) | ((cb >> 6) & 3);*/
+					*ptr++ = (((cr >> 5) & 7) << 5) |
+						(((cg >> 5) & 7) << 2) |
+						((cb >> 6) & 3);
 				}
 			}
 
@@ -263,6 +258,90 @@ void render(int xsz, int ysz, uint8_t far *fb) {
 			}
 		}
 	}
+}
+
+#define PACK_RGB16(r, g, b) \
+	((((r) << 8) & 0xf800) | (((g) << 3) & 0x7e0) | (((b) >> 3) & 0x1f))
+
+#define UNPACK_RED16(x)		(((x) & 0xf800) >> 8)
+#define UNPACK_GREEN16(x)	(((x) & 0x7e0) >> 3)
+#define UNPACK_BLUE16(x)	(((x) & 0x1f) << 3)
+
+void add_to_pixel(uint16_t far *pix, int err_r, int err_g, int err_b, float fact);
+
+void dither(void)
+{
+	int x, y;
+	unsigned char far *fb = vidmem;
+
+	int pitch = xres;
+	int planes = 1;
+
+	if(xres == 320 && yres == 240) {	/* mode x */
+		pitch >>= 2;
+		planes = 4;
+	}
+
+
+	for(y=0; y<yres; y++) {
+		for(x=0; x<xres; x++) {
+			int ref_r, ref_g, ref_b, r, g, b, idx;
+			int err_r, err_g, err_b, p;
+
+			ref_r = UNPACK_RED16(scanline[y][x]);
+			ref_g = UNPACK_GREEN16(scanline[y][x]);
+			ref_b = UNPACK_BLUE16(scanline[y][x]);
+
+			idx = alloc_color(ref_r, ref_g, ref_b);
+			lookup_color(idx, &r, &g, &b);
+
+			err_r = ref_r - r;
+			err_g = ref_g - g;
+			err_b = ref_b - b;
+
+			if(x < xres - 1) {
+				add_to_pixel(&scanline[y][x + 1], err_r, err_g, err_b, 0.4375);
+			}
+			if(y < yres - 1) {
+				if(x > 0) {
+					add_to_pixel(&scanline[y + 1][x - 1], err_r, err_g, err_b, 0.1875);
+				}
+				add_to_pixel(&scanline[y + 1][x], err_r, err_g, err_b, 0.3125);
+				if(x < xres - 1) {
+					add_to_pixel(&scanline[y + 1][x + 1], err_r, err_g, err_b, 0.0625);
+				}
+			}
+
+			if(planes > 1) {
+				p = x & 3;
+				set_plane_mask(1 << p);
+
+				*fb = idx;
+				if(p == 3) {
+					fb++;
+				}
+			} else {
+				*fb++ = idx;
+			}
+		}
+	}
+}
+
+void add_to_pixel(uint16_t far *pix, int err_r, int err_g, int err_b, float fact)
+{
+	int r = UNPACK_RED16(*pix);
+	int g = UNPACK_GREEN16(*pix);
+	int b = UNPACK_BLUE16(*pix);
+
+	r += (int)(fact * err_r);
+	g += (int)(fact * err_g);
+	b += (int)(fact * err_b);
+
+	if(r > 255) r = 255;
+	if(g > 255) g = 255;
+	if(b > 255) b = 255;
+
+	*pix = PACK_RGB16(r, g, b);
 }
 
 /* trace a ray throught the scene recursively (the recursion happens through
