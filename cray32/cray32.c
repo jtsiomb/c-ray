@@ -113,7 +113,8 @@ const char *usage = {
 };
 
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
 	int i;
 	uint32_t *pixels;
 	int rays_per_pixel = 1;
@@ -199,6 +200,24 @@ int main(int argc, char **argv) {
 		char c = getch();
 
 		if(c == 'q' || c == 27) break;
+		if(c == 's') {
+			FILE *fp = fopen("image.ppm", "wb");
+			if(fp) {
+				fprintf(fp, "P6\n%d %d\n255\n", xres, yres);
+				for(i=0; i<xres * yres; i++) {
+					if(bpp == 32) {
+						fputc((pixels[i] >> rshift) & 0xff, fp);
+						fputc((pixels[i] >> gshift) & 0xff, fp);
+						fputc((pixels[i] >> bshift) & 0xff, fp);
+					} else {
+						fputc(((uint8_t*)pixels)[i * 3], fp);
+						fputc(((uint8_t*)pixels)[i * 3 + 1], fp);
+						fputc(((uint8_t*)pixels)[i * 3 + 2], fp);
+					}
+				}
+				fclose(fp);
+			}
+		}
 	}
 
 	set_text_mode();
@@ -206,7 +225,8 @@ int main(int argc, char **argv) {
 }
 
 #define SCAN_SKIP	8
-void render(int xsz, int ysz, uint32_t *fb, int samples) {
+void render(int xsz, int ysz, uint32_t *fb, int samples)
+{
 	int i, x, y, s;
 	uint32_t *p32;
 	uint8_t *p24;
@@ -262,7 +282,8 @@ void render(int xsz, int ysz, uint32_t *fb, int samples) {
 /* trace a ray throught the scene recursively (the recursion happens through
  * shade() to calculate reflection rays if necessary).
  */
-struct vec3 trace(struct ray ray, int depth) {
+struct vec3 trace(struct ray ray, int depth)
+{
 	struct vec3 col;
 	struct spoint sp, nearest_sp;
 	struct object *nearest_obj = 0;
@@ -298,7 +319,8 @@ struct vec3 trace(struct ray ray, int depth) {
 /* Calculates direct illumination with the phong reflectance model.
  * Also handles reflections by calling trace again, if necessary.
  */
-struct vec3 shade(struct object *obj, struct spoint *sp, int depth) {
+struct vec3 shade(struct object *obj, struct spoint *sp, int depth)
+{
 	int i;
 	struct vec3 col = {0.05, 0.05, 0.05};
 
@@ -362,7 +384,8 @@ struct vec3 shade(struct object *obj, struct spoint *sp, int depth) {
 }
 
 /* calculate reflection vector */
-struct vec3 reflect(struct vec3 v, struct vec3 n) {
+struct vec3 reflect(struct vec3 v, struct vec3 n)
+{
 	struct vec3 res;
 	float dot = v.x * n.x + v.y * n.y + v.z * n.z;
 	res.x = -(2.0 * dot * n.x - v.x);
@@ -371,7 +394,8 @@ struct vec3 reflect(struct vec3 v, struct vec3 n) {
 	return res;
 }
 
-struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
+struct vec3 cross_product(struct vec3 v1, struct vec3 v2)
+{
 	struct vec3 res;
 	res.x = v1.y * v2.z - v1.z * v2.y;
 	res.y = v1.z * v2.x - v1.x * v2.z;
@@ -380,7 +404,8 @@ struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
 }
 
 /* determine the primary ray corresponding to the specified pixel (x, y) */
-struct ray get_primary_ray(int x, int y, int sample) {
+struct ray get_primary_ray(int x, int y, int sample)
+{
 	struct ray ray;
 	float m[3][3];
 	struct vec3 i, j = {0, 1, 0}, k, dir, orig = {0, 0, 0};
@@ -419,12 +444,14 @@ struct ray get_primary_ray(int x, int y, int sample) {
 }
 
 
-struct vec3 get_sample_pos(int x, int y, int sample) {
+struct vec3 get_sample_pos(int x, int y, int sample)
+{
 	struct vec3 pt;
-	static float sf = 0.0;
+	static float sfx = 0.0, sfy = 0.0;
 
-	if(sf == 0.0) {
-		sf = 1.5 / (float)xres;
+	if(sfx == 0.0) {
+		sfx = 1.5 / (float)xres;
+		sfy = 1.5 / (float)yres;
 	}
 
 	pt.x = ((float)x / (float)xres - 0.5) * 2.0 * aspect;
@@ -432,21 +459,23 @@ struct vec3 get_sample_pos(int x, int y, int sample) {
 
 	if(sample) {
 		struct vec3 jt = jitter(x, y, sample);
-		pt.x += jt.x * sf;
-		pt.y += jt.y * sf / aspect;
+		pt.x += jt.x * sfx;
+		pt.y += jt.y * sfy;
 	}
 	return pt;
 }
 
 /* jitter function taken from Graphics Gems I. */
-struct vec3 jitter(int x, int y, int s) {
+struct vec3 jitter(int x, int y, int s)
+{
 	struct vec3 pt;
 	pt.x = urand[(x + (y << 2) + irand[(x + s) & MASK]) & MASK].x;
 	pt.y = urand[(y + (x << 2) + irand[(y + s) & MASK]) & MASK].y;
 	return pt;
 }
 
-int ray_object(const struct object *obj, struct ray ray, struct spoint *sp) {
+int ray_object(const struct object *obj, struct ray ray, struct spoint *sp)
+{
 	switch(obj->type) {
 	case OBJ_SPHERE:
 		return ray_sphere(&obj->o.sph, ray, sp);
@@ -464,7 +493,8 @@ int ray_object(const struct object *obj, struct ray ray, struct spoint *sp) {
  * Also the surface point parameters like position, normal, etc are returned through
  * the sp pointer if it is not NULL.
  */
-int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
+int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp)
+{
 	float a, b, c, d, sqrt_d, t1, t2;
 	
 	a = SQ(ray.dir.x) + SQ(ray.dir.y) + SQ(ray.dir.z);
@@ -505,7 +535,8 @@ int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp) {
 }
 
 /* calculate ray-plane intersection... etc */
-int ray_plane(const struct plane *pln, struct ray ray, struct spoint *sp) {
+int ray_plane(const struct plane *pln, struct ray ray, struct spoint *sp)
+{
 	struct vec3 to_orig;
 	float t;
 
@@ -541,7 +572,8 @@ int ray_plane(const struct plane *pln, struct ray ray, struct spoint *sp) {
 
 /* Load the scene from an extremely simple scene description file */
 #define DELIM	" \t\n"
-void load_scene(FILE *fp) {
+void load_scene(FILE *fp)
+{
 	char line[256], *ptr, type;
 
 	obj_list = malloc(sizeof *obj_list);
