@@ -57,13 +57,14 @@ struct camera {
 	float fov;
 };
 
-void render(int xsz, int ysz, uint32_t *fb);
+void render(int xsz, int ysz, uint32_t *fb, int samples);
 struct vec3 trace(struct ray ray, int depth);
 struct vec3 shade(struct object *obj, struct spoint *sp, int depth);
 struct vec3 reflect(struct vec3 v, struct vec3 n);
 struct vec3 cross_product(struct vec3 v1, struct vec3 v2);
-struct ray get_primary_ray(int x, int y);
-struct vec3 get_sample_pos(int x, int y);
+struct ray get_primary_ray(int x, int y, int sample);
+struct vec3 get_sample_pos(int x, int y, int sample);
+struct vec3 jitter(int x, int y, int s);
 int ray_sphere(const struct sphere *sph, struct ray ray, struct spoint *sp);
 void load_scene(FILE *fp);
 
@@ -95,11 +96,17 @@ struct vec3 lights[MAX_LIGHTS];
 int lnum = 0;
 struct camera cam;
 
+#define NRAN	1024
+#define MASK	(NRAN - 1)
+struct vec3 urand[NRAN];
+int irand[NRAN];
+
 
 const char *usage = {
 	"Usage: cray32 [options]\n"
 	"Options:\n"
 	"  -s WxH     where W is the width and H the height of the image\n"
+	"  -r <rays>  shoot <rays> rays per pixel (antialiasing)\n"
 	"  -i <file>  read from <file> instead of stdin\n"
 	"  -h         this help screen\n\n"
 	"Note: at the moment the only valid resolutions are: 320x240 and 320x200\n\n"
@@ -108,8 +115,8 @@ const char *usage = {
 
 int main(int argc, char **argv) {
 	int i;
-	unsigned long rend_time, start_time;
 	uint32_t *pixels;
+	int rays_per_pixel = 1;
 	FILE *infile = stdin;
 
 	for(i=1; i<argc; i++) {
@@ -131,6 +138,15 @@ int main(int argc, char **argv) {
 					return 1;
 				}
 				break;
+
+			case 'r':
+				if(!isdigit(argv[++i][0])) {
+					fputs("-r must be followed by a number (rays per pixel)\n", stderr);
+					return EXIT_FAILURE;
+				}
+				rays_per_pixel = atoi(argv[i]);
+				break;
+
 
 			case 'h':
 				fputs(usage, stdout);
@@ -160,6 +176,12 @@ int main(int argc, char **argv) {
 	load_scene(infile);
 	if(infile != stdin) fclose(infile);
 
+	/* initialize the random number tables for the jitter */
+	for(i=0; i<NRAN; i++) urand[i].x = (float)rand() / RAND_MAX - 0.5;
+	for(i=0; i<NRAN; i++) urand[i].y = (float)rand() / RAND_MAX - 0.5;
+	for(i=0; i<NRAN; i++) irand[i] = (int)(NRAN * ((float)rand() / RAND_MAX));
+
+
 	printf("initializing graphics: %dx%d %dbpp\n", xres, yres, bpp);
 	if(!(pixels = set_video_mode(xres, yres, bpp))) {
 		return 1;
@@ -171,7 +193,7 @@ int main(int argc, char **argv) {
 		printf("got 24bpp\n");
 	}
 
-	render(xres, yres, pixels);
+	render(xres, yres, pixels, rays_per_pixel);
 
 	for(;;) {
 		char c = getch();
@@ -184,10 +206,11 @@ int main(int argc, char **argv) {
 }
 
 #define SCAN_SKIP	8
-void render(int xsz, int ysz, uint32_t *fb) {
-	int i, x, y;
+void render(int xsz, int ysz, uint32_t *fb, int samples) {
+	int i, x, y, s;
 	uint32_t *p32;
 	uint8_t *p24;
+	float rcp_samples = 1.0 / (float)samples;
 
 	for(i=0; i<SCAN_SKIP; i++) {
 		for(y=i; y<ysz; y+=SCAN_SKIP) {
@@ -199,11 +222,19 @@ void render(int xsz, int ysz, uint32_t *fb) {
 
 			for(x=0; x<xsz; x++) {
 				unsigned int cr, cg, cb;
-				struct vec3 col = trace(get_primary_ray(x, y), 0);
+				float r, g, b;
+				r = g = b = 0.0;
+			
+				for(s=0; s<samples; s++) {
+					struct vec3 col = trace(get_primary_ray(x, y, s), 0);
+					r += col.x;
+					g += col.y;
+					b += col.z;
+				}
 
-				cr = (unsigned int)(col.x * 255.0);
-				cg = (unsigned int)(col.y * 255.0);
-				cb = (unsigned int)(col.z * 255.0);
+				cr = (unsigned int)(r * rcp_samples * 255.0);
+				cg = (unsigned int)(g * rcp_samples * 255.0);
+				cb = (unsigned int)(b * rcp_samples * 255.0);
 
 				if(cr > 255) cr = 255;
 				if(cg > 255) cg = 255;
@@ -349,7 +380,7 @@ struct vec3 cross_product(struct vec3 v1, struct vec3 v2) {
 }
 
 /* determine the primary ray corresponding to the specified pixel (x, y) */
-struct ray get_primary_ray(int x, int y) {
+struct ray get_primary_ray(int x, int y, int sample) {
 	struct ray ray;
 	float m[3][3];
 	struct vec3 i, j = {0, 1, 0}, k, dir, orig = {0, 0, 0};
@@ -365,7 +396,7 @@ struct ray get_primary_ray(int x, int y) {
 	m[1][0] = i.y; m[1][1] = j.y; m[1][2] = k.y;
 	m[2][0] = i.z; m[2][1] = j.z; m[2][2] = k.z;
 	
-	ray.dir = get_sample_pos(x, y);
+	ray.dir = get_sample_pos(x, y, sample);
 	ray.dir.z = 1.0 / HALF_FOV;
 	ray.dir.x *= RAY_MAG;
 	ray.dir.y *= RAY_MAG;
@@ -388,7 +419,7 @@ struct ray get_primary_ray(int x, int y) {
 }
 
 
-struct vec3 get_sample_pos(int x, int y) {
+struct vec3 get_sample_pos(int x, int y, int sample) {
 	struct vec3 pt;
 	static float sf = 0.0;
 
@@ -398,6 +429,20 @@ struct vec3 get_sample_pos(int x, int y) {
 
 	pt.x = ((float)x / (float)xres - 0.5) * 2.0 * aspect;
 	pt.y = (0.5 - (float)y / (float)yres) * 2.0;
+
+	if(sample) {
+		struct vec3 jt = jitter(x, y, sample);
+		pt.x += jt.x * sf;
+		pt.y += jt.y * sf / aspect;
+	}
+	return pt;
+}
+
+/* jitter function taken from Graphics Gems I. */
+struct vec3 jitter(int x, int y, int s) {
+	struct vec3 pt;
+	pt.x = urand[(x + (y << 2) + irand[(x + s) & MASK]) & MASK].x;
+	pt.y = urand[(y + (x << 2) + irand[(y + s) & MASK]) & MASK].y;
 	return pt;
 }
 
