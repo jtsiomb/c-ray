@@ -1,0 +1,25 @@
+# spheres
+#	position		radius	color			shininess	reflectivity
+s	-1.5 -0.3 -1	0.7		1.0 0.2 0.05		50.0	0.3
+s	1.5 -0.4 0		0.6		0.1 0.85 1.0		50.0	0.4
+
+# walls
+#s	0 -1000 2		999		0.1 0.2 0.6			80.0	0.8
+
+#   position		junk										normal
+p	0 -1 0			0		0.1 0.2 0.4			80.0	0.8		0 1 0
+p	3 0 1			0		0.2 0.5 0.3			0		0.2		-1 0 -0.3
+p	1 -1 4			0		0.1 0.1 0.1			60.0	0.5		0.3 0 -1
+p	-100 0 0		0		0.7 0.6 0.5			50.0	0		1 0 0 
+p	1 -1 -100		0		0.1 0.1 0.1			60.0	0		0.3 0 1
+
+# bouncing ball
+s	0 0 2			1		1.0 0.5 0.1			60.0	0.7
+
+# lights...
+l	-50 100 -50
+l	40 40 150
+
+# camera (there can be only one!)
+#	position	FOV		target
+c	0 3 -8		45		0 0 0
