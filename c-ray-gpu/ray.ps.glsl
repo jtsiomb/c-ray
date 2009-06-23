@@ -80,7 +80,7 @@ void main()
 
 
 #define SQ(x)	((x) * (x))
-#define ERR_MARGIN		1e-4
+#define ERR_MARGIN		1e-5
 spoint ray_sphere(sphere sph, ray r)
 {
 	float a, b, c, d, sqrt_d, t1, t2;

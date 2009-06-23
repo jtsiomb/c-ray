@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 #include <GL/glew.h>
 #include <GL/glut.h>
 #include "sdr.h"
@@ -31,7 +33,16 @@ static void idle(void)
 
 int main(int argc, char **argv)
 {
-	load_scene(stdin);
+	FILE *fp = stdin;
+
+	if(argc > 1) {
+		if(!(fp = fopen(argv[1], "r"))) {
+			fprintf(stderr, "failed to open file: %s: %s\n", argv[1], strerror(errno));
+			return 1;
+		}
+	}
+
+	load_scene(fp);
 
 	glutInitWindowSize(640, 480);
 	glutInit(&argc, argv);
