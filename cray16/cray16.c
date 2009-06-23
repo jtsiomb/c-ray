@@ -242,10 +242,7 @@ void render(int xsz, int ysz, uint8_t far *fb) {
 					scanline[y][x] = ((cr << 8) & 0xf800) | ((cg << 3) & 0x7e0) |
 						((cb >> 3) & 0x1f);
 					/**ptr++ = alloc_color(cr, cg, cb);*/
-					/**ptr++ = (cr & 0xe0) | ((cg >> 3) & 0x1c) | ((cb >> 6) & 3);*/
-					*ptr++ = (((cr >> 5) & 7) << 5) |
-						(((cg >> 5) & 7) << 2) |
-						((cb >> 6) & 3);
+					*ptr++ = (cr & 0xe0) | ((cg >> 3) & 0x1c) | ((cb >> 6) & 3);
 				}
 			}
 
