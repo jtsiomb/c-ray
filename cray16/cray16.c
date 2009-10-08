@@ -11,6 +11,8 @@
 #include "color.h"
 #include "log.h"
 
+#define USE_PALETTE
+
 typedef unsigned long uint32_t;
 typedef unsigned short uint16_t;
 typedef unsigned char uint8_t;
@@ -108,6 +110,7 @@ const char *usage = {
 	"Options:\n"
 	"  -s WxH     where W is the width and H the height of the image\n"
 	"  -i <file>  read from <file> instead of stdin\n"
+	"  -p <file>  read color palette from a file with a color per line\n"
 	"  -h         this help screen\n\n"
 	"Note: at the moment the only valid resolutions are: 320x240 and 320x200\n\n"
 };
@@ -118,6 +121,7 @@ int main(int argc, char **argv) {
 	unsigned long rend_time, start_time;
 	uint8_t far *pixels;
 	FILE *infile = stdin;
+	const char *palfile = 0;
 
 	logfoo("starting c-ray16\n");
 
@@ -139,6 +143,10 @@ int main(int argc, char **argv) {
 					fprintf(stderr, "failed to open input file %s: %s\n", argv[i], strerror(errno));
 					return 1;
 				}
+				break;
+
+			case 'p':
+				palfile = argv[++i];
 				break;
 
 			case 'h':
@@ -184,8 +192,10 @@ int main(int argc, char **argv) {
 	if(set_video_mode(xres, yres, 8) == -1) {
 		return 1;
 	}
-
-	init_palette();
+	if(init_palette(palfile) == -1) {
+		restore_vga();
+		return 1;
+	}
 
 	logfoo("starting rendering\n");
 	render(xres, yres, vidmem);
@@ -241,8 +251,12 @@ void render(int xsz, int ysz, uint8_t far *fb) {
 
 					scanline[y][x] = ((cr << 8) & 0xf800) | ((cg << 3) & 0x7e0) |
 						((cb >> 3) & 0x1f);
-					/**ptr++ = alloc_color(cr, cg, cb);*/
+
+#ifdef USE_PALETTE
+					*ptr++ = alloc_color(cr, cg, cb);
+#else
 					*ptr++ = (cr & 0xe0) | ((cg >> 3) & 0x1c) | ((cb >> 6) & 3);
+#endif
 				}
 			}
 
