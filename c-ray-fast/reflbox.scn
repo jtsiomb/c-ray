@@ -1,0 +1,30 @@
+# spheres
+
+#	name		diffuse			specular	shin/es	refl	refr	ior
+M	"red refl"	1.0 0.2 0.05	1 1 1		50.0	0.3		0		0
+
+#	position		radius	material
+s	-1.5 -0.3 -1	0.7		"red refl"
+#	position		radius	color			shin/es	refl	refr	ior
+s	1.5 -0.4 0		0.6		0.1 0.85 1.0	50.0	0.4		0		0
+
+#   position	normal		...
+p	0 -1 0		0 1 0		0.1 0.2 0.4		80.0	0.8		0		0
+p	3 0 1		-1 0 -0.3	0.2 0.5 0.3		0		0.2		0		0
+p	1 -1 4		0.3 0 -1	0.1 0.1 0.1		60.0	0.5		0		0
+p	-100 0 0	1 0 0		0.7 0.6 0.5		50.0	0		0		0
+p	1 -1 -100	0.3 0 1		0.1 0.1 0.1		60.0	0		0		0
+
+# bouncing ball
+s	0 0 2			1		1.0 0.5 0.1		60.0	0.7		0		0
+
+# lights
+#   position		intens	color
+l	-50 100 -50		1		1.0 1.0 1.0		
+l	40 40 150		1		1.0 1.0 1.0
+
+# camera (there can be only one!)
+#	position	FOV		target
+c	0 3 -8		45		0 0 0
+
+# vi:ts=4 sts=4 sw=4:

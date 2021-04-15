@@ -61,12 +61,14 @@ struct ray {
 };
 
 struct material {
-	struct color col;	/* color */
+	char *name;
+	struct color kd, ks; /* color (diffuse/specular) */
 	double spow;		/* specular power */
 	double refl;		/* reflection intensity */
 	double refr;		/* refraction (transmission) intensity */
 	double ior;			/* index of refraction */
 };
+struct material def_mtl = {0, {1, 1, 1}, {1, 1, 1}, 50, 0, 0, 0};
 
 struct sphere {
 	struct vec3 pos;
@@ -126,8 +128,6 @@ unsigned long get_msec(void);
 
 #define RAY_MAG			1000.0			/* trace rays of this magnitude */
 #define MAX_RAY_DEPTH	5				/* raytrace recursion limit */
-#define FOV				0.78539816		/* field of view in rads (pi/4) */
-#define HALF_FOV		(FOV * 0.5)
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
 
 /* some helpful macros... */
@@ -153,7 +153,7 @@ struct light *lights;
 int num_lt;
 struct camera cam;
 double inv_gamma = 1.0 / 2.2;
-int progress;
+int verbose, progress;
 struct color bgcol;
 struct color ambcol = {0.05, 0.05, 0.05, 0};
 
@@ -197,10 +197,27 @@ void print_obj(void)
 	}
 }
 
+void print_progr(int x, int max)
+{
+	int i;
+	int progr = 100 * x / (max - 1);
+	int count = progr / 2;
+
+	fputs("rendering [", stderr);
+	for(i=0; i<count-1; i++) {
+		fputc('=', stderr);
+	}
+	if(count) fputc('>', stderr);
+	for(i=count; i<50; i++) {
+		fputc(' ', stderr);
+	}
+	fprintf(stderr, "] %d%%\r", progr);
+}
+
 
 int main(int argc, char **argv)
 {
-	int i, r, g, b, a, verbose = 0;
+	int i, r, g, b, a;
 	unsigned long rend_time, start_time;
 	struct color *pixels;
 	int rays_per_pixel = 1;
@@ -326,6 +343,7 @@ int main(int argc, char **argv)
 	rend_time = get_msec() - start_time;
 
 	/* output statistics to stderr */
+	if(progress) fputc('\n', stderr);
 	fprintf(stderr, "Rendering took: %lu seconds (%lu milliseconds)\n", rend_time / 1000, rend_time);
 
 	/* output the image */
@@ -334,9 +352,9 @@ int main(int argc, char **argv)
 		fprintf(outfile_alpha, "P5\n" COMMENT "\n%d %d\n255\n", xres, yres);
 	}
 	for(i=0; i<xres * yres; i++) {
-		r = pixels->r * 255.0;//pow(pixels->r, inv_gamma) * 255.0;
-		g = pixels->g * 255.0;//pow(pixels->g, inv_gamma) * 255.0;
-		b = pixels->b * 255.0;//pow(pixels->b, inv_gamma) * 255.0;
+		r = pow(pixels->r, inv_gamma) * 255.0;
+		g = pow(pixels->g, inv_gamma) * 255.0;
+		b = pow(pixels->b, inv_gamma) * 255.0;
 
 		fputc(CLAMP(r, 0, 255), outfile);
 		fputc(CLAMP(g, 0, 255), outfile);
@@ -386,6 +404,10 @@ void render(int xsz, int ysz, struct color *fb, int samples)
 			fb->b = b * rcp_samples;
 			fb->a = a * rcp_samples;
 			fb++;
+		}
+
+		if(progress) {
+			print_progr(j, ysz);
 		}
 	}
 }
@@ -473,9 +495,9 @@ void shade(struct ray *ray, struct spoint *sp, int depth, struct color *col)
 			idiff = MAX(DOT(sp->normal, ldir), 0.0);
 			ispec = mtl->spow > 0.0 ? pow(MAX(DOT(sp->vref, ldir), 0.0), mtl->spow) : 0.0;
 
-			col->r += idiff * mtl->col.r + ispec;
-			col->g += idiff * mtl->col.g + ispec;
-			col->b += idiff * mtl->col.b + ispec;
+			col->r += (idiff * mtl->kd.r + ispec * mtl->ks.r) * lights[i].col.r;
+			col->g += (idiff * mtl->kd.g + ispec * mtl->ks.g) * lights[i].col.g;
+			col->b += (idiff * mtl->kd.b + ispec * mtl->ks.b) * lights[i].col.b;
 		}
 	}
 
@@ -576,7 +598,7 @@ void get_primary_ray(struct ray *ray, int x, int y, int sample)
 	m[2][0] = i.z; m[2][1] = j.z; m[2][2] = k.z;
 
 	get_sample_pos(&ray->dir, x, y, sample);
-	ray->dir.z = 1.0 / HALF_FOV;
+	ray->dir.z = 2.0 / cam.fov;
 	ray->dir.x *= RAY_MAG;
 	ray->dir.y *= RAY_MAG;
 	ray->dir.z *= RAY_MAG;
@@ -607,7 +629,7 @@ void get_sample_pos(struct vec3 *res, int x, int y, int sample)
 	}
 
 	res->x = px * aspect;
-	res->y = 1.0 - py;
+	res->y = -py;
 	res->z = 0.0;
 }
 
@@ -718,6 +740,17 @@ int ray_plane(struct plane *pln, struct ray *ray, struct spoint *sp)
 	return 1;
 }
 
+struct material *find_material(const char *name)
+{
+	int i;
+	for(i=0; i<num_mtl; i++) {
+		if(strcmp(materials[i].name, name) == 0) {
+			return materials + i;
+		}
+	}
+	return 0;
+}
+
 #define APPEND(arr, suffix) \
 	do { \
 		if(num_##suffix >= max_##suffix) { \
@@ -732,16 +765,82 @@ int ray_plane(struct plane *pln, struct ray *ray, struct spoint *sp)
 		} \
 	} while(0)
 
+char *expect_num(char *ptr, double *num)
+{
+	char *endp;
+	*num = strtod(ptr, &endp);
+	return endp == ptr ? 0 : endp;
+}
+
+char *expect_vec(char *ptr, struct vec3 *v)
+{
+	if(!(ptr = expect_num(ptr, &v->x))) return 0;
+	if(!(ptr = expect_num(ptr, &v->y))) return 0;
+	if(!(ptr = expect_num(ptr, &v->z))) return 0;
+	return ptr;
+}
+
+char *expect_color(char *ptr, struct color *c)
+{
+	struct vec3 v;
+	if(!(ptr = expect_vec(ptr, &v))) return 0;
+	c->r = v.x;
+	c->g = v.y;
+	c->b = v.z;
+	c->a = 1.0f;
+	return ptr;
+}
+
+char *expect_str(char *ptr, char *buf, int bufsz)
+{
+	while(*ptr && isspace(*ptr)) ptr++;
+	if(*ptr++ != '"') return 0;
+	while(*ptr && *ptr != '"' && --bufsz > 0) {
+		*buf++ = *ptr++;
+	}
+	*buf = 0;
+	return *ptr ? ptr + 1 : ptr;
+}
+
+#define EXPECT_NUM(p, n) \
+	do { \
+		if(!(p = expect_num(p, n))) { \
+			if(verbose) fprintf(stderr, "%d: expected number\n", lineno); \
+			continue; \
+		} \
+	} while(0)
+
+#define EXPECT_VEC(p, v) \
+	do { \
+		if(!(p = expect_vec(p, v))) { \
+			if(verbose) fprintf(stderr, "%d: expected vector\n", lineno); \
+			continue; \
+		} \
+	} while(0)
+
+#define EXPECT_COLOR(p, c) \
+	do { \
+		if(!(p = expect_color(p, c))) { \
+			if(verbose) fprintf(stderr, "%d: expected color\n", lineno); \
+			continue; \
+		} \
+	} while(0)
+
+#define EXPECT_STR(p, b, s) \
+	do { \
+		if(!(p = expect_str(p, b, s))) { \
+			if(verbose) fprintf(stderr, "%d: expected string\n", lineno); \
+			continue; \
+		} \
+	} while(0)
+
+
 /* Load the scene from an extremely simple scene description file */
-/* TODO: material list */
-#define DELIM	" \t\n"
 int load_scene(FILE *fp)
 {
-	int i, max_obj, max_lt, max_mtl;
-	char line[256], *ptr, type;
-	struct vec3 pos, norm;
-	struct color col;
-	double rad, spow, refl, refr;
+	int lineno = 0;
+	char buf[256], name[64], *line, *ptr, *next;
+	int max_obj, max_mtl, max_lt;
 	struct object *obj;
 	struct light *lt;
 	struct material *mtl;
@@ -756,84 +855,93 @@ int load_scene(FILE *fp)
 		return -1;
 	}
 
-	while((ptr = fgets(line, 256, fp))) {
+	while(fgets(buf, sizeof buf, fp)) {
+		lineno++;
+		if((ptr = strchr(buf, '#'))) *ptr = 0;
+		ptr = buf;
+		while(*ptr && isspace(*ptr)) ptr++;
+		if(!*ptr || *ptr == '\n' || *ptr == '\r') continue;
 
-		while(*ptr == ' ' || *ptr == '\t') ptr++;
-		if(*ptr == '#' || *ptr == '\n') continue;
+		line = ptr++;
+		switch(line[0]) {
+		case 'M':
+			APPEND(materials, mtl);
+			mtl = materials + num_mtl;
 
-		if(!(ptr = strtok(line, DELIM))) continue;
-		type = *ptr;
+			EXPECT_STR(ptr, name, sizeof name);
+			EXPECT_COLOR(ptr, &mtl->kd);
+			EXPECT_COLOR(ptr, &mtl->ks);
+			EXPECT_NUM(ptr, &mtl->spow);
+			EXPECT_NUM(ptr, &mtl->refl);
+			EXPECT_NUM(ptr, &mtl->refr);
+			EXPECT_NUM(ptr, &mtl->ior);
 
-		for(i=0; i<3; i++) {
-			if(!(ptr = strtok(0, DELIM))) break;
-			*((double*)&pos.x + i) = atof(ptr);
-		}
+			if(!(mtl->name = malloc(strlen(name) + 1))) {
+				perror("failed to allocate material name buffer");
+				return -1;
+			}
+			strcpy(mtl->name, name);
+			num_mtl++;
+			break;
 
-		if(type == 'l') {
+		case 's':
+		case 'p':
+			APPEND(objects, obj);
+			obj = objects + num_obj;
+
+			if(line[0] == 's') {
+				obj->type = OBJ_SPHERE;
+				EXPECT_VEC(ptr, &obj->o.sph.pos);
+				EXPECT_NUM(ptr, &obj->o.sph.rad);
+			} else {
+				obj->type = OBJ_PLANE;
+				EXPECT_VEC(ptr, &obj->o.pln.pos);
+				EXPECT_VEC(ptr, &obj->o.pln.norm);
+			}
+			if((next = expect_str(ptr, name, sizeof name))) {
+				if(!(mtl = find_material(name))) {
+					fprintf(stderr, "%d: reference to unknown material: \"%s\"\n", lineno, name);
+					continue;
+				}
+				obj->mat = *mtl;
+			} else {
+				obj->mat = def_mtl;
+				if(!(next = expect_color(ptr, &obj->mat.kd))) goto mtldone;
+				if(!(next = expect_num(next, &obj->mat.spow))) goto mtldone;
+				if(!(next = expect_num(next, &obj->mat.refl))) goto mtldone;
+				if(!(next = expect_num(next, &obj->mat.refr))) goto mtldone;
+				expect_num(next, &obj->mat.ior);
+			}
+mtldone:	num_obj++;
+			break;
+
+		case 'l':
 			APPEND(lights, lt);
-			lt = lights + num_lt++;
-			lt->pos = pos;
-			lt->col.r = lt->col.g = lt->col.b = 1.0f;	/* TODO */
-			continue;
-		}
+			lt = lights + num_lt;
 
-		if(!(ptr = strtok(0, DELIM))) continue;
-		rad = atof(ptr);
+			EXPECT_VEC(ptr, &lt->pos);
+			if(!expect_color(ptr, &lt->col)) {
+				lt->col.r = lt->col.g = lt->col.b = 1.0f;
+			}
+			num_lt++;
+			break;
 
-		for(i=0; i<3; i++) {
-			if(!(ptr = strtok(0, DELIM))) break;
-			*((float*)&col.r + i) = atof(ptr);
-		}
+		case 'c':
+			EXPECT_VEC(ptr, &cam.pos);
+			EXPECT_NUM(ptr, &cam.fov);
+			cam.fov = M_PI * cam.fov / 180.0;
+			EXPECT_VEC(ptr, &cam.targ);
+			break;
 
-		if(type == 'c') {
-			cam.pos = pos;
-			cam.targ.x = col.r;
-			cam.targ.y = col.g;
-			cam.targ.z = col.b;
-			cam.fov = rad;
-			continue;
-		}
-
-		if(!(ptr = strtok(0, DELIM))) continue;
-		spow = atof(ptr);
-
-		if(!(ptr = strtok(0, DELIM))) continue;
-		refl = atof(ptr);
-
-		APPEND(objects, obj);
-		obj = objects + num_obj++;
-
-		obj->mat.col = col;
-		obj->mat.spow = spow;
-		obj->mat.refl = refl;
-		obj->mat.refr = 0.0;
-		obj->mat.ior = 0.0;
-
-		if(type == 's') {
-			obj->type = OBJ_SPHERE;
-			obj->o.sph.pos = pos;
-			obj->o.sph.rad = rad;
-			continue;
-		}
-
-		for(i=0; i<3; i++) {
-			if(!(ptr = strtok(0, DELIM))) break;
-			*((double*)&norm.x + i) = atof(ptr);
-		}
-		NORMALIZE(norm);
-
-		if(type == 'p') {
-			obj->type = OBJ_PLANE;
-			obj->o.pln.pos = pos;
-			obj->o.pln.norm = norm;
-		} else {
-			fprintf(stderr, "unknown type: %c\n", type);
+		default:
+			if(verbose) {
+				fprintf(stderr, "%d: ignoring unknown command: %c\n", lineno, line[0]);
+			}
 		}
 	}
 
 	return 0;
 }
-
 
 /* provide a millisecond-resolution timer for each system */
 #if defined(unix) || defined(__unix__)
