@@ -1,0 +1,9 @@
+*.o
+*.d
+*.swp
+*c-ray-mt/c-ray-mt
+*c-ray-f/c-ray-f
+*c-ray-unix/c-ray-unix
+*c-ray-gpu/c-ray-gpu
+*c-ray-fast/c-ray-fast
+*.gba
