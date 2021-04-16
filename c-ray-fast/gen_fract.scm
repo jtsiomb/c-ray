@@ -43,7 +43,12 @@
 
 
 ; start the process...
-(generate 1.0 4 `(0 0 0) 0)			; create the thing
+(display "# This is an old scene designed for c-ray-f/c-ray-mt which didn't do gamma") (newline)
+(display "# correction. Setting gamma to 1 makes c-ray-fast immitate the old behaviour and") (newline)
+(display "# produces an image closer to the original. Don't do this for new scenes.") (newline)
+(display "? gamma 1.0") (newline)
+(display "? ambient 0.05 0.05 0.05") (newline)
+(generate 1.0 5 `(0 0 0) 0)			; create the thing
 (display "s  0 -10002.25 0  10000  0.2 0.35 0.5  80.0  0.4") (newline) ; create floor
 (display "s  0  10100.00 0  10000  0.5 0.2 0.1  40.0  0.0") (newline)    ; create ceiling
 (display "l	-50 68 -50") (newline)	; and a light

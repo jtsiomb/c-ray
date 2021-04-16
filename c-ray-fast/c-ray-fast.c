@@ -1,22 +1,26 @@
 /* c-ray-fast - a simple raytracing filter based on c-ray-f and c-ray-mt.
  * Copyright (C) 2006-2021 John Tsiombikas <nuclear@member.fsf.org>
  *
- * You are free to use, modify and redistribute this program under the
- * terms of the GNU General Public License v3 or (at your option) later.
- * see COPYING for details.
+ * You are free to use, modify and redistribute this program under the terms
+ * of the GNU General Public License v3 or later. See COPYING for details.
  * ---------------------------------------------------------------------
  * Usage:
- *   compile:  cc -o c-ray-f c-ray-f.c -lm
- *   run:      cat scene | ./c-ray-f >foo.ppm
+ *   compile:  cc -o c-ray-fast c-ray-fast.c -lm -lpthread
+ *   run:      cat scene | ./c-ray-fast >foo.ppm
  *   enjoy:    display foo.ppm (with imagemagick)
  *      or:    imgview foo.ppm (on IRIX)
  * ---------------------------------------------------------------------
  * Scene file format:
- *   # sphere (many)
- *   s  x y z  rad   r g b   shininess   reflectivity
- *   # light (many)
- *   l  x y z
- *   # camera (one)
+ *   # options (samples/gamma/ambient/bgcolor)
+ *   ? option  value
+ *   # material
+ *   M "name"  dr dg db  sr sg sb  shininess  reflect  transmit  ior
+ *   # sphere
+ *   s  x y z  rad   "material name"
+ *   p  x y z  nx ny nz  "material name"
+ *   # light
+ *   l  x y z  r g b
+ *   # camera
  *   c  x y z  fov   tx ty tz
  * ---------------------------------------------------------------------
  */
@@ -27,6 +31,7 @@
 #include <float.h>
 #include <ctype.h>
 #include <errno.h>
+#include <assert.h>
 
 #define VER_STR		"c-ray-fast v1.0"
 #define COMMENT		"# rendered with " VER_STR
@@ -57,7 +62,7 @@ struct color {
 };
 
 struct ray {
-	struct vec3 orig, dir;
+	struct vec3 orig, dir, invdir;
 };
 
 struct material {
@@ -110,10 +115,22 @@ struct light {
 	struct color col;
 };
 
+
+struct aabox {
+	struct vec3 vmin, vmax;
+};
+
+struct octnode {
+	struct aabox aabb;
+	struct object **obj;
+	int num_obj, max_obj;
+	struct octnode *sub[8];
+};
+
 void render(int xsz, int ysz, struct color *fb, int samples);
 void trace(struct ray *ray, int depth, struct color *col);
 void shade(struct ray *ray, struct spoint *sp, int depth, struct color *col);
-int find_nearest_hit(struct ray *ray, struct spoint *sp);
+int ray_scene(struct ray *ray, struct spoint *sp);
 void reflect(struct vec3 *res, struct vec3 *v, struct vec3 *n);
 void refract(struct vec3 *res, struct vec3 *v, struct vec3 *n, double from_ior, double to_ior);
 void cross_product(struct vec3 *res, struct vec3 *v1, struct vec3 *v2);
@@ -123,12 +140,22 @@ void jitter(struct vec3 *res, int x, int y, int s);
 int ray_object(struct object *obj, struct ray *ray, struct spoint *sp);
 int ray_sphere(struct sphere *sph, struct ray *ray, struct spoint *sp);
 int ray_plane(struct plane *pln, struct ray *ray, struct spoint *sp);
+int ray_aabox(struct aabox *aabox, struct ray *ray);
+int box_sphere(struct aabox *box, struct sphere *sph);
 int load_scene(FILE *fp);
+int build_octree(struct octnode *node, int depth);
+int populate_octnode(struct octnode *node, struct object **obj, int num_obj);
+int isect_octnode(struct octnode *node, struct ray *ray, struct spoint *spret);
+void print_obj(void);
+void print_progr(int x, int max);
 unsigned long get_msec(void);
 
 #define RAY_MAG			1000.0			/* trace rays of this magnitude */
 #define MAX_RAY_DEPTH	5				/* raytrace recursion limit */
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
+
+#define OCT_MAX_OBJ		64
+#define OCT_MAX_DEPTH	9
 
 /* some helpful macros... */
 #define SQ(x)		((x) * (x))
@@ -140,22 +167,28 @@ unsigned long get_msec(void);
 	double len = sqrt(DOT(a, a));\
 	(a).x /= len; (a).y /= len; (a).z /= len;\
 } while(0);
+#define LERP(a, b, t)	((a) + ((b) - (a)) * (t))
 
 /* global state */
 int xres = 800;
 int yres = 600;
 double aspect = 1.333333;
 struct object *objects;
-int num_obj;
+struct object *infobj;	/* infinite objects (planes) */
 struct material *materials;
-int num_mtl;
 struct light *lights;
-int num_lt;
+int num_obj, num_inf, num_mtl, num_lt;
 struct camera cam;
 double inv_gamma = 1.0 / 2.2;
 int verbose, progress;
 struct color bgcol;
-struct color ambcol = {0.05, 0.05, 0.05, 0};
+struct color ambcol = {0.01, 0.01, 0.01, 0};
+int rays_per_pixel = 1;
+
+enum { OPT_GAMMA = 1, OPT_SAMPLES = 2, OPT_BGCOL = 4 };
+unsigned int override = 0;
+
+struct octnode *octroot;
 
 #define NRAN	1024
 #define JITTER_MASK	(NRAN - 1)
@@ -178,86 +211,54 @@ const char *usage = {
 	"  -h         this help screen\n\n"
 };
 
-
-void print_obj(void)
-{
-	int i;
-	struct object *obj = objects;
-
-	for(i=0; i<num_obj; i++) {
-		if(obj->type == OBJ_SPHERE) {
-			fprintf(stderr, "sphere: (%.2f %.2f %.2f) %.2f\n",
-					obj->o.sph.pos.x, obj->o.sph.pos.y, obj->o.sph.pos.z, obj->o.sph.rad);
-		} else {
-			fprintf(stderr, " plane: (%.2f %.2f %.2f) & (%.2f %.2f %.2f)\n",
-					obj->o.pln.pos.x, obj->o.pln.pos.y, obj->o.pln.pos.z,
-					obj->o.pln.norm.x, obj->o.pln.norm.y, obj->o.pln.norm.z);
-		}
-		obj++;
-	}
-}
-
-void print_progr(int x, int max)
-{
-	int i;
-	int progr = 100 * x / (max - 1);
-	int count = progr / 2;
-
-	fputs("rendering [", stderr);
-	for(i=0; i<count-1; i++) {
-		fputc('=', stderr);
-	}
-	if(count) fputc('>', stderr);
-	for(i=count; i<50; i++) {
-		fputc(' ', stderr);
-	}
-	fprintf(stderr, "] %d%%\r", progr);
-}
-
-
 int main(int argc, char **argv)
 {
 	int i, r, g, b, a;
 	unsigned long rend_time, start_time;
 	struct color *pixels;
-	int rays_per_pixel = 1;
 	FILE *infile = stdin, *outfile = stdout, *outfile_alpha = 0;
-	char *sep, *endp;
+	char *endp;
 	float gamma;
+	struct object *obj;
+	struct aabox box;
 
 	for(i=1; i<argc; i++) {
-		if(argv[i][0] == '-' && argv[i][2] == 0) {
+		if(argv[i][0] == '-') {
+			if(argv[i][2] != 0) {
+invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
+				fputs(usage, stderr);
+				return 1;
+			}
 
 			switch(argv[i][1]) {
 			case 's':
-				if(!isdigit(argv[++i][0]) || !(sep = strchr(argv[i], 'x')) || !isdigit(*(sep + 1))) {
+				if(!argv[++i] || sscanf(argv[i], "%dx%d", &xres, &yres) != 2) {
 					fputs("-s must be followed by something like \"640x480\"\n", stderr);
 					return 1;
 				}
-				xres = atoi(argv[i]);
-				yres = atoi(sep + 1);
 				aspect = (double)xres / (double)yres;
 				break;
 
 			case 'i':
-				if(!(infile = fopen(argv[++i], "rb"))) {
+				if(!argv[++i] || !(infile = fopen(argv[i], "rb"))) {
 					fprintf(stderr, "failed to open input file %s: %s\n", argv[i], strerror(errno));
 					return 1;
 				}
 				break;
 
 			case 'o':
-				if(!(outfile = fopen(argv[++i], "wb"))) {
+				if(!argv[++i] || !(outfile = fopen(argv[i], "wb"))) {
 					fprintf(stderr, "failed to open output file %s: %s\n", argv[i], strerror(errno));
 					return 1;
 				}
 				break;
 
 			case 'r':
-				if((rays_per_pixel = atoi(argv[i])) <= 0) {
+				if(!argv[++i] || (rays_per_pixel = atoi(argv[i])) <= 0) {
 					fputs("-r must be followed by a number (rays per pixel)\n", stderr);
 					return 1;
 				}
+				override |= OPT_SAMPLES;
 				break;
 
 			case 'v':
@@ -265,10 +266,12 @@ int main(int argc, char **argv)
 				break;
 
 			case 'g':
-				if((gamma = atof(argv[++i])) == 0.0) {
+				if(!argv[++i] || (gamma = atof(argv[i])) == 0.0) {
 					fputs("-g must be followed by a (non-zero) gamma value\n", stderr);
+					return 1;
 				}
 				inv_gamma = 1.0 / gamma;
+				override |= OPT_GAMMA;
 				break;
 
 			case 'p':
@@ -276,14 +279,18 @@ int main(int argc, char **argv)
 				break;
 
 			case 'a':
-				if(!(outfile_alpha = fopen(argv[++i], "wb"))) {
+				if(!argv[++i] || !(outfile_alpha = fopen(argv[i], "wb"))) {
 					fprintf(stderr, "failed to open alpha output file %s: %s\n", argv[i], strerror(errno));
 					return 1;
 				}
 				break;
 
 			case 'b':
-				if(argv[++i][0] == '#') {
+				if(!argv[++i]) {
+					fprintf(stderr, "-b must be followed by a background color\n");
+					return 1;
+				}
+				if(argv[i][0] == '#') {
 					long col = strtol(argv[i] + 1, &endp, 16);
 					if(endp == argv[i] + 1) {
 						fprintf(stderr, "-b followed by invalid HTML color format\n");
@@ -304,6 +311,7 @@ int main(int argc, char **argv)
 					bgcol.b = b * 255.0f;
 				}
 				bgcol.a = 0.0f;
+				override |= OPT_BGCOL;
 				break;
 
 			case 'h':
@@ -311,14 +319,13 @@ int main(int argc, char **argv)
 				return 0;
 
 			default:
-				fprintf(stderr, "invalid option: %s\n", argv[i]);
-				fputs(usage, stderr);
-				return 1;
+				goto invalopt;
 			}
 		} else {
-			fprintf(stderr, "unexpected argument: %s\n", argv[i]);
-			fputs(usage, stderr);
-			return 1;
+			if(!(infile = fopen(argv[i], "rb"))) {
+				fprintf(stderr, "failed to open input file %s: %s\n", argv[i], strerror(errno));
+				return 1;
+			}
 		}
 	}
 
@@ -331,6 +338,50 @@ int main(int argc, char **argv)
 	}
 	if(verbose) {
 		print_obj();
+	}
+
+	if(!(octroot = malloc(sizeof *octroot)) || !(octroot->obj = malloc(num_obj * sizeof *octroot->obj))) {
+		perror("failed to allocate octree root node");
+		return 1;
+	}
+	octroot->num_obj = 0;
+
+	box.vmin.x = box.vmin.y = box.vmin.z = DBL_MAX;
+	box.vmax.x = box.vmax.y = box.vmax.z = -DBL_MAX;
+
+	obj = objects;
+	for(i=0; i<num_obj; i++) {
+		if(obj->type == OBJ_SPHERE) {
+			struct sphere *sph = &obj->o.sph;
+			double d;
+
+			d = sph->pos.x - sph->rad;
+			if(d < box.vmin.x) box.vmin.x = d;
+			d = sph->pos.x + sph->rad;
+			if(d > box.vmax.x) box.vmax.x = d;
+			d = sph->pos.y - sph->rad;
+			if(d < box.vmin.y) box.vmin.y = d;
+			d = sph->pos.y + sph->rad;
+			if(d > box.vmax.y) box.vmax.y = d;
+			d = sph->pos.z - sph->rad;
+			if(d < box.vmin.z) box.vmin.z = d;
+			d = sph->pos.z + sph->rad;
+			if(d > box.vmax.z) box.vmax.z = d;
+
+			octroot->obj[octroot->num_obj++] = obj;
+		}
+		obj++;
+	}
+	octroot->aabb = box;
+
+	if(verbose) fprintf(stderr, "Building acceleration structure... ");
+	start_time = get_msec();
+	if(build_octree(octroot, 0) == -1) {
+		return 1;
+	}
+	if(verbose) {
+		rend_time = get_msec() - start_time;
+		fprintf(stderr, "%lu seconds (%lu milliseconds)\n", rend_time / 1000, rend_time);
 	}
 
 	/* initialize the random number tables for the jitter */
@@ -412,12 +463,51 @@ void render(int xsz, int ysz, struct color *fb, int samples)
 	}
 }
 
-int find_nearest_hit(struct ray *ray, struct spoint *retsp)
+#define USE_OCTREE
+
+int ray_scene(struct ray *ray, struct spoint *retsp)
 {
 	int i;
 	struct spoint sp, sp0;
 
+#ifdef USE_OCTREE
+	ray->invdir.x = 1.0 / ray->dir.x;
+	ray->invdir.y = 1.0 / ray->dir.y;
+	ray->invdir.z = 1.0 / ray->dir.z;
+
+	if(!retsp) {
+		for(i=0; i<num_inf; i++) {
+			if(ray_object(infobj + i, ray, 0)) {
+				return 1;
+			}
+		}
+		return isect_octnode(octroot, ray, 0);
+	}
+
 	sp0.dist = DBL_MAX;
+	sp0.obj = 0;
+
+	for(i=0; i<num_inf; i++) {
+		if(ray_object(infobj + i, ray, &sp) && sp.dist < sp0.dist) {
+			sp0 = sp;
+		}
+	}
+	if(isect_octnode(octroot, ray, &sp) && sp.dist < sp0.dist) {
+		sp0 = sp;
+	}
+
+#else
+	if(!retsp) {
+		for(i=0; i<num_obj; i++) {
+			if(ray_object(objects + i, ray, 0)) {
+				return 1;
+			}
+		}
+		return 0;
+	}
+
+	sp0.dist = DBL_MAX;
+	sp0.obj = 0;
 
 	/* find the nearest intersection ... */
 	for(i=0; i<num_obj; i++) {
@@ -427,8 +517,9 @@ int find_nearest_hit(struct ray *ray, struct spoint *retsp)
 			}
 		}
 	}
+#endif
 
-	if(sp0.dist != DBL_MAX) {
+	if(sp0.obj) {
 		if(retsp) *retsp = sp0;
 		return 1;
 	}
@@ -448,8 +539,9 @@ void trace(struct ray *ray, int depth, struct color *col)
 		return;
 	}
 
-	if(find_nearest_hit(ray, &sp)) {
+	if(ray_scene(ray, &sp)) {
 		shade(ray, &sp, depth, col);
+		col->a = 1.0f;
 	} else {
 		*col = bgcol;
 	}
@@ -489,7 +581,7 @@ void shade(struct ray *ray, struct spoint *sp, int depth, struct color *col)
 		shadow_ray.dir = ldir;
 
 		/* shoot shadow rays to determine if we have a line of sight with the light */
-		if(!find_nearest_hit(&shadow_ray, 0)) {
+		if(!ray_scene(&shadow_ray, 0)) {
 			NORMALIZE(ldir);
 
 			idiff = MAX(DOT(sp->normal, ldir), 0.0);
@@ -619,8 +711,8 @@ void get_sample_pos(struct vec3 *res, int x, int y, int sample)
 	float px, py;
 	struct vec3 jt;
 
-	px = (double)x / (double)xres * 2.0 - 1.0;
-	py = (double)y / (double)yres * 2.0 - 1.0;
+	px = x;
+	py = y;
 
 	if(sample) {
 		jitter(&jt, x, y, sample);
@@ -628,8 +720,8 @@ void get_sample_pos(struct vec3 *res, int x, int y, int sample)
 		py += jt.y;
 	}
 
-	res->x = px * aspect;
-	res->y = -py;
+	res->x = (px / xres * 2.0 - 1.0) * aspect;
+	res->y = 1.0 - py / yres * 2.0;
 	res->z = 0.0;
 }
 
@@ -740,6 +832,59 @@ int ray_plane(struct plane *pln, struct ray *ray, struct spoint *sp)
 	return 1;
 }
 
+int ray_aabox(struct aabox *box, struct ray *ray)
+{
+	double tmin, tmax, tx1, tx2, ty1, ty2, tz1, tz2;
+
+	tx1 = (box->vmin.x - ray->orig.x) * ray->invdir.x;
+	tx2 = (box->vmax.x - ray->orig.x) * ray->invdir.x;
+
+	tmin = MIN(tx1, tx2);
+	tmax = MAX(tx1, tx2);
+
+	ty1 = (box->vmin.y - ray->orig.y) * ray->invdir.y;
+	ty2 = (box->vmax.y - ray->orig.y) * ray->invdir.y;
+
+	tmin = MAX(tmin, MIN(ty1, ty2));
+	tmax = MIN(tmax, MAX(ty1, ty2));
+
+	tz1 = (box->vmin.z - ray->orig.z) * ray->invdir.z;
+	tz2 = (box->vmax.z - ray->orig.z) * ray->invdir.z;
+
+	tmin = MAX(tmin, MIN(tz1, tz2));
+	tmax = MIN(tmax, MAX(tz1, tz2));
+
+	return tmax >= tmin && tmax >= 0.0 && tmin <= 1.0;
+}
+
+int box_sphere(struct aabox *box, struct sphere *sph)
+{
+	struct vec3 p, b, bpos;
+	double dmax;
+
+	bpos.x = (box->vmin.x + box->vmax.x) * 0.5;
+	bpos.y = (box->vmin.y + box->vmax.y) * 0.5;
+	bpos.z = (box->vmin.z + box->vmax.z) * 0.5;
+
+	b.x = (box->vmax.x - box->vmin.x) * 0.5;
+	b.y = (box->vmax.y - box->vmin.y) * 0.5;
+	b.z = (box->vmax.z - box->vmin.z) * 0.5;
+
+	p.x = fabs(sph->pos.x - bpos.x) - b.x;
+	p.y = fabs(sph->pos.y - bpos.y) - b.y;
+	p.z = fabs(sph->pos.z - bpos.z) - b.z;
+
+	if(p.x > 0.0 && p.y > 0.0 && p.z > 0.0) {
+		double rsq = sph->rad * sph->rad;
+		return p.x * p.x + p.y * p.y + p.z * p.z <= rsq;
+	}
+
+	dmax = MAX(p.x, p.y);
+	if(p.z > dmax) dmax = p.z;
+
+	return dmax <= sph->rad;
+}
+
 struct material *find_material(const char *name)
 {
 	int i;
@@ -840,17 +985,19 @@ int load_scene(FILE *fp)
 {
 	int lineno = 0;
 	char buf[256], name[64], *line, *ptr, *next;
-	int max_obj, max_mtl, max_lt;
+	int max_obj, max_mtl, max_lt, max_inf;
 	struct object *obj;
 	struct light *lt;
 	struct material *mtl;
+	double num;
 
-	max_obj = max_mtl = max_lt = 8;
+	max_obj = max_mtl = max_lt = max_inf = 8;
 	objects = malloc(max_obj * sizeof *objects);
 	materials = malloc(max_mtl * sizeof *materials);
+	infobj = malloc(max_inf * sizeof *infobj);
 	lights = malloc(max_lt * sizeof *lights);
 
-	if(!objects || !materials || !lights) {
+	if(!objects || !materials || !lights || !infobj) {
 		perror("load_scene: failed to allocate initial buffer");
 		return -1;
 	}
@@ -913,6 +1060,12 @@ int load_scene(FILE *fp)
 				expect_num(next, &obj->mat.ior);
 			}
 mtldone:	num_obj++;
+
+			if(line[0] == 'p') {
+				/* also add planes to the infinite objects list */
+				APPEND(infobj, inf);
+				infobj[num_inf++] = *obj;
+			}
 			break;
 
 		case 'l':
@@ -933,6 +1086,37 @@ mtldone:	num_obj++;
 			EXPECT_VEC(ptr, &cam.targ);
 			break;
 
+		case '?':
+			while(*ptr && isspace(*ptr)) ptr++;
+			if(memcmp(ptr, "gamma", 5) == 0) {
+				if(!(override & OPT_GAMMA)) {
+					ptr += 5;
+					EXPECT_NUM(ptr, &num);
+					inv_gamma = 1.0 / num;
+				}
+
+			} else if(memcmp(ptr, "samples", 7) == 0) {
+				if(!(override & OPT_SAMPLES)) {
+					ptr += 7;
+					EXPECT_NUM(ptr, &num);
+					rays_per_pixel = (int)num;
+				}
+
+			} else if(memcmp(ptr, "bgcolor", 7) == 0) {
+				if(!(override & OPT_BGCOL)) {
+					ptr += 7;
+					EXPECT_COLOR(ptr, &bgcol);
+				}
+
+			} else if(memcmp(ptr, "ambient", 7) == 0) {
+				ptr += 7;
+				EXPECT_COLOR(ptr, &ambcol);
+
+			} else {
+				fprintf(stderr, "%d: unknown option: %s\n", lineno, ptr);
+			}
+			break;
+
 		default:
 			if(verbose) {
 				fprintf(stderr, "%d: ignoring unknown command: %c\n", lineno, line[0]);
@@ -941,6 +1125,162 @@ mtldone:	num_obj++;
 	}
 
 	return 0;
+}
+
+int build_octree(struct octnode *node, int depth)
+{
+	int i;
+	struct octnode *sub;
+	double hx, hy, hz;
+
+	if(node->num_obj < OCT_MAX_OBJ || depth >= OCT_MAX_DEPTH) {
+		return 0;
+	}
+
+	hx = (node->aabb.vmin.x + node->aabb.vmax.x) * 0.5;
+	hy = (node->aabb.vmin.y + node->aabb.vmax.y) * 0.5;
+	hz = (node->aabb.vmin.z + node->aabb.vmax.z) * 0.5;
+
+	for(i=0; i<8; i++) {
+		if(!(sub = malloc(sizeof *sub)) || !(sub->obj = malloc(node->num_obj * sizeof *sub->obj))) {
+			perror("failed to allocate octree node");
+			free(sub);
+			return -1;
+		}
+		sub->num_obj = 0;
+
+		sub->aabb.vmin.x = LERP(node->aabb.vmin.x, hx, i & 1);
+		sub->aabb.vmax.x = LERP(hx, node->aabb.vmax.x, i & 1);
+		sub->aabb.vmin.y = LERP(node->aabb.vmin.y, hy, (i >> 1) & 1);
+		sub->aabb.vmax.y = LERP(hy, node->aabb.vmax.y, (i >> 1) & 1);
+		sub->aabb.vmin.z = LERP(node->aabb.vmin.z, hz, (i >> 2) & 1);
+		sub->aabb.vmax.z = LERP(hz, node->aabb.vmax.z, (i >> 2) & 1);
+
+		if(!populate_octnode(sub, node->obj, node->num_obj)) {
+			/* no objects intersect this node's bbox, drop it */
+			free(sub->obj);
+			free(sub);
+			sub = 0;
+		} else {
+			if(build_octree(sub, depth + 1) == -1) {
+				return -1;
+			}
+		}
+		node->sub[i] = sub;
+	}
+
+	free(node->obj);
+	node->obj = 0;
+	node->num_obj = 0;
+	return 0;
+}
+
+int populate_octnode(struct octnode *node, struct object **objects, int num_obj)
+{
+	int i;
+	struct object *obj;
+
+	for(i=0; i<num_obj; i++) {
+		obj = *objects++;
+
+		if(obj->type == OBJ_SPHERE) {
+			if(box_sphere(&node->aabb, &obj->o.sph)) {
+				node->obj[node->num_obj++] = obj;
+			}
+		}
+	}
+	return node->num_obj;
+}
+
+int isect_octnode(struct octnode *node, struct ray *ray, struct spoint *spret)
+{
+	int i;
+	struct spoint sp, sp0;
+
+	if(!ray_aabox(&node->aabb, ray)) return 0;
+
+	if(!spret) {
+		/* find any intersection */
+
+		if(node->obj) {
+			for(i=0; i<node->num_obj; i++) {
+				if(ray_object(node->obj[i], ray, 0)) {
+					return 1;
+				}
+			}
+			return 0;
+		}
+
+		for(i=0; i<8; i++) {
+			if(node->sub[i] && isect_octnode(node->sub[i], ray, 0)) {
+				return 1;
+			}
+		}
+		return 0;
+	}
+
+	sp0.dist = DBL_MAX;
+	sp0.obj = 0;
+
+	/* find the nearest intersection */
+	if(node->obj) {
+		/* leaf node, test all objects */
+		for(i=0; i<node->num_obj; i++) {
+			if(ray_object(node->obj[i], ray, &sp) && sp.dist < sp0.dist) {
+				sp0 = sp;
+			}
+		}
+	} else {
+		/* non-leaf node, recurse to subnodes */
+		for(i=0; i<8; i++) {
+			if(!node->sub[i]) continue;
+
+			if(isect_octnode(node->sub[i], ray, &sp) && sp.dist < sp0.dist) {
+				sp0 = sp;
+			}
+		}
+	}
+
+	if(sp0.obj) {
+		*spret = sp0;
+		return 1;
+	}
+	return 0;
+}
+
+void print_obj(void)
+{
+	int i;
+	struct object *obj = objects;
+
+	for(i=0; i<num_obj; i++) {
+		if(obj->type == OBJ_SPHERE) {
+			fprintf(stderr, "sphere: (%.2f %.2f %.2f) %.2f\n",
+					obj->o.sph.pos.x, obj->o.sph.pos.y, obj->o.sph.pos.z, obj->o.sph.rad);
+		} else {
+			fprintf(stderr, " plane: (%.2f %.2f %.2f) & (%.2f %.2f %.2f)\n",
+					obj->o.pln.pos.x, obj->o.pln.pos.y, obj->o.pln.pos.z,
+					obj->o.pln.norm.x, obj->o.pln.norm.y, obj->o.pln.norm.z);
+		}
+		obj++;
+	}
+}
+
+void print_progr(int x, int max)
+{
+	int i;
+	int progr = 100 * x / (max - 1);
+	int count = progr / 2;
+
+	fputs("rendering [", stderr);
+	for(i=0; i<count-1; i++) {
+		fputc('=', stderr);
+	}
+	if(count) fputc('>', stderr);
+	for(i=count; i<50; i++) {
+		fputc(' ', stderr);
+	}
+	fprintf(stderr, "] %d%%\r", progr);
 }
 
 /* provide a millisecond-resolution timer for each system */
