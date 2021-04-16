@@ -700,7 +700,9 @@ void shade(struct ray *ray, struct spoint *sp, int depth, struct color *col)
 		entering = 1;
 	}
 
-	*col = ambcol;
+	col->r = ambcol.r * mtl->kd.r;
+	col->g = ambcol.r * mtl->kd.g;
+	col->b = ambcol.r * mtl->kd.b;
 
 	/* for all lights ... */
 	for(i=0; i<num_lt; i++) {
