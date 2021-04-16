@@ -31,16 +31,19 @@
 #include <float.h>
 #include <ctype.h>
 #include <errno.h>
-#include <assert.h>
+#include <pthread.h>
 
 #define VER_STR		"c-ray-fast v1.0"
 #define COMMENT		"# rendered with " VER_STR
 
-#if !defined(unix) && !defined(__unix__)
-#ifdef __MACH__
-#define unix		1
-#endif	/* __MACH__ */
+#if defined(__APPLE__) && defined(__MACH__)
+#ifndef __unix__
+#define __unix__	1
 #endif	/* unix */
+#ifndef __bsd__
+#define __bsd__	1
+#endif	/* bsd */
+#endif	/* apple */
 
 /* find the appropriate way to define explicitly sized types */
 /* for C99 or GNU libc (also mach's libc) we can use stdint.h */
@@ -127,7 +130,13 @@ struct octnode {
 	struct octnode *sub[8];
 };
 
-void render(int xsz, int ysz, struct color *fb, int samples);
+struct block {
+	struct color *start;
+	int x, y, width, height;
+};
+
+void render(void);
+void *thread_func(void *arg);
 void trace(struct ray *ray, int depth, struct color *col);
 void shade(struct ray *ray, struct spoint *sp, int depth, struct color *col);
 int ray_scene(struct ray *ray, struct spoint *sp);
@@ -149,6 +158,7 @@ int isect_octnode(struct octnode *node, struct ray *ray, struct spoint *spret);
 void print_obj(void);
 void print_progr(int x, int max);
 unsigned long get_msec(void);
+int detect_nproc(void);
 
 #define RAY_MAG			1000.0			/* trace rays of this magnitude */
 #define MAX_RAY_DEPTH	5				/* raytrace recursion limit */
@@ -173,6 +183,8 @@ unsigned long get_msec(void);
 int xres = 800;
 int yres = 600;
 double aspect = 1.333333;
+struct color *pixels;
+
 struct object *objects;
 struct object *infobj;	/* infinite objects (planes) */
 struct material *materials;
@@ -184,11 +196,20 @@ int verbose, progress;
 struct color bgcol;
 struct color ambcol = {0.01, 0.01, 0.01, 0};
 int rays_per_pixel = 1;
+double rcp_samples;
 
 enum { OPT_GAMMA = 1, OPT_SAMPLES = 2, OPT_BGCOL = 4 };
 unsigned int override = 0;
 
 struct octnode *octroot;
+
+int blk_width, blk_height;
+struct block *blocks;
+int num_blk, cur_blk;
+pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
+pthread_t *threads;
+int num_thr;
 
 #define NRAN	1024
 #define JITTER_MASK	(NRAN - 1)
@@ -215,7 +236,6 @@ int main(int argc, char **argv)
 {
 	int i, r, g, b, a;
 	unsigned long rend_time, start_time;
-	struct color *pixels;
 	FILE *infile = stdin, *outfile = stdout, *outfile_alpha = 0;
 	char *endp;
 	float gamma;
@@ -314,6 +334,26 @@ invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
 				override |= OPT_BGCOL;
 				break;
 
+			case 'B':
+				if(!argv[++i]) {
+					fprintf(stderr, "-B must be followed by the rendering block size (WxH)\n");
+					return 1;
+				}
+				if(sscanf(argv[i], "%dx%d", &blk_width, &blk_height) < 1 || blk_width <= 0 || blk_height < 0) {
+					fprintf(stderr, "-B followed by invalid block size: %s\n", argv[i]);
+					return 1;
+				}
+				if(!blk_height) blk_height = blk_width;
+				break;
+
+			case 't':
+				if(!argv[++i]) {
+					fprintf(stderr, "-t must be followed by the number of threads\n");
+					return 1;
+				}
+				num_thr = atoi(argv[i]);
+				break;
+
 			case 'h':
 				fputs(usage, stdout);
 				return 0;
@@ -329,6 +369,31 @@ invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
 		}
 	}
 
+	if(num_thr <= 0) {
+		num_thr = detect_nproc();
+	}
+	if(!(threads = malloc(num_thr * sizeof *threads))) {
+		perror("failed to allocate threads");
+		return 1;
+	}
+
+	for(i=0; i<num_thr; i++) {
+		if(pthread_create(threads + i, 0, thread_func, 0) == -1) {
+			fprintf(stderr, "failed to spawn thread %d\n", i);
+			return 1;
+		}
+	}
+
+	if(verbose) {
+		fputs(VER_STR "\n", stderr);
+		fprintf(stderr, "Using %d threads\n", num_thr);
+	}
+
+	/* initialize the random number tables for the jitter */
+	for(i=0; i<NRAN; i++) urand[i].x = (double)rand() / RAND_MAX - 0.5;
+	for(i=0; i<NRAN; i++) urand[i].y = (double)rand() / RAND_MAX - 0.5;
+	for(i=0; i<NRAN; i++) irand[i] = (int)(NRAN * ((double)rand() / RAND_MAX));
+
 	if(!(pixels = malloc(xres * yres * sizeof *pixels))) {
 		perror("pixel buffer allocation failed");
 		return 1;
@@ -336,10 +401,14 @@ invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
 	if(load_scene(infile) == -1) {
 		return 1;
 	}
-	if(verbose) {
-		print_obj();
-	}
 
+	if(!blk_width) {
+		blk_width = blk_height = 32;
+	}
+	if(blk_width > xres) blk_width = xres;
+	if(blk_height > yres) blk_height = yres;
+
+	/* prepare acceleration structure */
 	if(!(octroot = malloc(sizeof *octroot)) || !(octroot->obj = malloc(num_obj * sizeof *octroot->obj))) {
 		perror("failed to allocate octree root node");
 		return 1;
@@ -384,13 +453,9 @@ invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
 		fprintf(stderr, "%lu seconds (%lu milliseconds)\n", rend_time / 1000, rend_time);
 	}
 
-	/* initialize the random number tables for the jitter */
-	for(i=0; i<NRAN; i++) urand[i].x = (double)rand() / RAND_MAX - 0.5;
-	for(i=0; i<NRAN; i++) urand[i].y = (double)rand() / RAND_MAX - 0.5;
-	for(i=0; i<NRAN; i++) irand[i] = (int)(NRAN * ((double)rand() / RAND_MAX));
-
+	/* start rendering */
 	start_time = get_msec();
-	render(xres, yres, pixels, rays_per_pixel);
+	render();
 	rend_time = get_msec() - start_time;
 
 	/* output statistics to stderr */
@@ -428,39 +493,105 @@ invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
 	return 0;
 }
 
-/* render a frame of xsz/ysz dimensions into the provided framebuffer */
-void render(int xsz, int ysz, struct color *fb, int samples)
+void render(void)
 {
-	int i, j, s;
-	float r, g, b, a;
-	struct color col;
-	struct ray ray;
-	float rcp_samples = 1.0f / (float)samples;
+	int i, j, bx, by, bheight, nxblk, nyblk;
+	struct color *fb;
+	struct block *blk;
 
-	for(j=0; j<ysz; j++) {
-		for(i=0; i<xsz; i++) {
-			r = g = b = a = 0.0;
+	nxblk = (xres + blk_width - 1) / blk_width;
+	nyblk = (yres + blk_height - 1) / blk_height;
+	if(!(blocks = malloc(nxblk * nyblk * sizeof *blocks))) {
+		perror("failed to allocate render blocks");
+		return;
+	}
+	blk = blocks;
 
-			for(s=0; s<samples; s++) {
-				get_primary_ray(&ray, i, j, s);
-				trace(&ray, 0, &col);
-				r += col.r;
-				g += col.g;
-				b += col.b;
-				a += col.a;
-			}
+	fb = pixels;
+	rcp_samples = 1.0 / (double)rays_per_pixel;
 
-			fb->r = r * rcp_samples;
-			fb->g = g * rcp_samples;
-			fb->b = b * rcp_samples;
-			fb->a = a * rcp_samples;
-			fb++;
+	pthread_mutex_lock(&job_mutex);
+	for(j=0; j<nyblk; j++) {
+		by = j * blk_height;
+		bheight = yres - by < blk_height ? yres - by : blk_height;
+
+		for(i=0; i<nxblk; i++) {
+			bx = i * blk_width;
+
+			blk->start = fb;
+			blk->x = bx;
+			blk->y = by;
+			blk->width = xres - bx < blk_width ? xres - bx : blk_width;
+			blk->height = bheight;
+
+			fb += blk->width;
+			blk++;
 		}
 
+		fb += xres * (blk_height - 1);
+	}
+
+	num_blk = nxblk * nyblk;
+	cur_blk = 0;
+	pthread_mutex_unlock(&job_mutex);
+	pthread_cond_broadcast(&job_cond);
+
+	for(i=0; i<num_thr; i++) {
+		pthread_join(threads[i], 0);
+	}
+}
+
+void *thread_func(void *arg)
+{
+	int i, j, x, y, s;
+	float r, g, b, a;
+	struct ray ray;
+	struct color col, *pix;
+	struct block *blk;
+
+	pthread_mutex_lock(&job_mutex);
+	while(!num_blk) {
+		pthread_cond_wait(&job_cond, &job_mutex);
+	}
+
+	while(cur_blk < num_blk) {
+		blk = blocks + cur_blk++;
+		pthread_mutex_unlock(&job_mutex);
+
+		pix = blk->start;
+		y = blk->y;
+		for(i=0; i<blk->height; i++) {
+			x = blk->x;
+			for(j=0; j<blk->width; j++) {
+				r = g = b = a = 0.0;
+
+				for(s=0; s<rays_per_pixel; s++) {
+					get_primary_ray(&ray, x, y, s);
+					trace(&ray, 0, &col);
+					r += col.r;
+					g += col.g;
+					b += col.b;
+					a += col.a;
+				}
+
+				pix->r = r * rcp_samples;
+				pix->g = g * rcp_samples;
+				pix->b = b * rcp_samples;
+				pix->a = a * rcp_samples;
+				pix++;
+				x++;
+			}
+			pix += xres - blk->width;
+			y++;
+		}
+
+		pthread_mutex_lock(&job_mutex);
 		if(progress) {
-			print_progr(j, ysz);
+			print_progr(cur_blk, num_blk);
 		}
 	}
+	pthread_mutex_unlock(&job_mutex);
+	return 0;
 }
 
 #define USE_OCTREE
@@ -1269,7 +1400,7 @@ void print_obj(void)
 void print_progr(int x, int max)
 {
 	int i;
-	int progr = 100 * x / (max - 1);
+	int progr = 100 * x / max;
 	int count = progr / 2;
 
 	fputs("rendering [", stderr);
@@ -1285,8 +1416,13 @@ void print_progr(int x, int max)
 
 /* provide a millisecond-resolution timer for each system */
 #if defined(unix) || defined(__unix__)
+#include <unistd.h>
 #include <time.h>
 #include <sys/time.h>
+#ifdef __bsd__
+#include <sys/sysctl.h>
+#endif
+
 unsigned long get_msec(void)
 {
 	static struct timeval tv, tv0;
@@ -1298,11 +1434,42 @@ unsigned long get_msec(void)
 	}
 	return (tv.tv_sec - tv0.tv_sec) * 1000 + (tv.tv_usec - tv0.tv_usec) / 1000;
 }
+
+int detect_nproc(void)
+{
+#if defined(__bsd__)
+	/* BSD systems provide the num.processors through sysctl */
+	int num, mib[] = {CTL_HW, HW_NCPU};
+	size_t len = sizeof num;
+
+	sysctl(mib, 2, &num, &len, 0, 0);
+	return num;
+
+#elif defined(__sgi)
+	/* SGI IRIX flavour of the _SC_NPROC_ONLN sysconf */
+	return sysconf(_SC_NPROC_ONLN);
+#else
+	/* Linux (and others?) have the _SC_NPROCESSORS_ONLN sysconf */
+	return sysconf(_SC_NPROCESSORS_ONLN);
+#endif	/* bsd/sgi/other */
+}
+
 #elif defined(__WIN32__) || defined(WIN32)
 #include <windows.h>
-unsigned long get_msec(void) {
+
+unsigned long get_msec(void)
+{
 	return GetTickCount();
 }
+
+int detect_nproc(void)
+{
+	/* under windows we need to call GetSystemInfo */
+	SYSTEM_INFO info;
+	GetSystemInfo(&info);
+	return info.dwNumberOfProcessors;
+}
+
 #else
 #error "I don't know how to measure time on your platform"
 #endif
