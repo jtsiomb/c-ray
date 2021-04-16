@@ -326,9 +326,9 @@ invalopt:		fprintf(stderr, "invalid option: %s\n", argv[i]);
 						fprintf(stderr, "-b followed by invalid R,G,B color value\n");
 						return 1;
 					}
-					bgcol.r = r * 255.0f;
-					bgcol.g = g * 255.0f;
-					bgcol.b = b * 255.0f;
+					bgcol.r = r / 255.0f;
+					bgcol.g = g / 255.0f;
+					bgcol.b = b / 255.0f;
 				}
 				bgcol.a = 0.0f;
 				override |= OPT_BGCOL;
