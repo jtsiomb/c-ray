@@ -10,7 +10,6 @@
 #include <sys/time.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include "byteorder.h"
 
 #define msleep(x)	usleep((x) * 1000);
 
@@ -63,6 +62,20 @@ unsigned long get_msec(void);
 #define FOV				0.78539816		/* field of view in rads (pi/4) */
 #define HALF_FOV		(FOV * 0.5)
 #define ERR_MARGIN		1e-6			/* an arbitrary error margin to avoid surface acne */
+
+#if !defined(LITTLE_ENDIAN) && !defined(BIG_ENDIAN)
+#if  defined(__i386__) || defined(__ia64__) || defined(WIN32) || \
+    (defined(__alpha__) || defined(__alpha)) || \
+     defined(__arm__) || \
+    (defined(__mips__) && defined(__MIPSEL__)) || \
+     defined(__SYMBIAN32__) || \
+     defined(__x86_64__) || \
+     defined(__LITTLE_ENDIAN__)
+#define LITTLE_ENDIAN
+#else
+#define BIG_ENDIAN
+#endif
+#endif
 
 /* bit-shift ammount for packing each color into a 32bit uint */
 #ifdef LITTLE_ENDIAN
