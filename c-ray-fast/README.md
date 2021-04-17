@@ -22,7 +22,7 @@ Website: http://nuclear.mutantstargoat.com/sw/c-ray
 Github repo: https://github.com/jtsiomb/c-ray
 
 Latest release: 
-  - http://github.com/jtsiomb/c-ray/releases/download/c-ray-2.0/c-ray-2.0.tar.gz
+  - https://github.com/jtsiomb/c-ray/releases/download/v2.0/c-ray-2.0.tar.gz
   - http://nuclear.mutantstargoat.com/sw/c-ray/c-ray-2.0.tar.gz
 
 License

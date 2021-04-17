@@ -19,7 +19,7 @@ faster, gamma corrected output, more flexible scene description, but still
 maintaining the simplicity and zero dependencies of the original), look in the
 `c-ray-fast` directory. Or grab the last release archive:
 
-  - http://github.com/jtsiomb/c-ray/releases/download/c-ray-2.0/c-ray-2.0.tar.gz
+  - https://github.com/jtsiomb/c-ray/releases/download/v2.0/c-ray-2.0.tar.gz
   - http://nuclear.mutantstargoat.com/sw/c-ray/c-ray-2.0.tar.gz
 
 As a renderer c-ray-2.0 is a *significant* improvement over the original. But it
