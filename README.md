@@ -44,7 +44,7 @@ self-contained raytracer in a single source file. It rendered spheres, had
 reflections and a line-based scene description, and used SDL 1.2 to continuously
 draw frames in a window, featuring a rotating camera and a bouncing ball.
 
-## c-ray-f
+### c-ray-f
 I quickly realized that using SDL to draw in a window runs counter to the idea
 of making the renderer as simple and short as possible. So I removed the SDL
 code, and made it into a filter (the `-f` suffix stands for filter) which reads a
@@ -54,7 +54,7 @@ further and removing any library dependencies other than libc in the process.
 There was also an intermediate `c-ray-unix` version, which was similar to the
 original SDL one, but using Xlib to talk to the window system instead of SDL.
 
-## Benchmarking PCs, the Gameboy Advance, and SGI workstations
+### Benchmarking PCs, the Gameboy Advance, and SGI workstations
 Since `c-ray-f` was so simple to compile and run on any system with a C
 compiler, and since it prints the elapsed time to stderr, it turned out to be
 very convenient for comparing pure floating point performance.
@@ -78,7 +78,7 @@ floating point performance. So I pointed c-ray to him:
 > http://apricot.hep.ntua.gr/~nuclear/tmp/c-ray_results.html                      
 > if you find it useful, feel free to use it.
 
-## Multithreaded c-ray-mt
+### Multithreaded c-ray-mt
 Back in 2005 multi-core personal computers were still quite rare, but since Ian
 used to deal with high-end SGI systems which commonly came in multi-processor
 configurations, it quickly became apparent that the single-threaded `c-ray-f` is
@@ -88,7 +88,7 @@ Therefore I quickly hacked a simple multi-threaded version of c-ray, called
 oddball additions and experiments over the years; the original version is the
 one tagged with `c-ray-1.1` (or you could just get the release archive).
 
-## Spread within the SGI community
+### Spread within the SGI community
 Ian took over the benchmark results page, and it quickly expanded to become a
 comprehensive comparison of a slew of different SGI systems:
 https://web.archive.org/web/20200209145437/http://www.futuretech.blinkenlights.nl/c-ray.html
@@ -98,7 +98,7 @@ then mostly centered around the now-defunct nekochan forums. The denizens of
 nekochan were all too eager to show off their SGI system's performance, and as a
 result c-ray spread through the community.
 
-## Spreading far and wide
+### Spreading far and wide
 Seeing c-ray used by nekochan users was interesting, but not very surprising,
 given the Ian connection. But then suddenly I started hearing about c-ray
 popping up all over the place. Apparently Michael Larabel of Phoronix (a UNIX
