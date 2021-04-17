@@ -5,7 +5,7 @@
  * of the GNU General Public License v3 or later. See COPYING for details.
  * ---------------------------------------------------------------------
  * Usage:
- *   compile:  cc -o c-ray-fast c-ray-fast.c -lm -lpthread
+ *   compile:  cc -o c-ray-fast -O3 c-ray-fast.c -lm -lpthread
  *   run:      cat scene | ./c-ray-fast >foo.ppm
  *   enjoy:    display foo.ppm (with imagemagick)
  *      or:    imgview foo.ppm (on IRIX)

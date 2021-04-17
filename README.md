@@ -1,6 +1,8 @@
 c-ray archival repo
 ===================
 
+![shots](http://nuclear.mutantstargoat.com/sw/c-ray/img/c-ray_thumbs.jpg)
+
 Quick directions
 ----------------
 If you're looking for the version of c-ray widely used as a benchmark, you can
