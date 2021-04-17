@@ -1,6 +1,5 @@
 c-ray-fast
 ==========
-
 An improved, but still extremely simple, raytracer.
 
 This version of c-ray is cherry-picking the best parts of c-ray-f and c-ray-mt
@@ -16,6 +15,15 @@ Main improvements:
   - option for producing an alpha mask
   - colored lights
   - gamma correction
+
+Download
+--------
+Website: http://nuclear.mutantstargoat.com/sw/c-ray
+Github repo: https://github.com/jtsiomb/c-ray
+
+Latest release: 
+  - http://github.com/jtsiomb/c-ray/releases/download/c-ray-2.0/c-ray-2.0.tar.gz
+  - http://nuclear.mutantstargoat.com/sw/c-ray/c-ray-2.0.tar.gz
 
 License
 -------

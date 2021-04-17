@@ -33,7 +33,7 @@
 #include <errno.h>
 #include <pthread.h>
 
-#define VER_STR		"c-ray-fast v1.0"
+#define VER_STR		"c-ray-fast v2.0"
 #define COMMENT		"# rendered with " VER_STR
 
 #if defined(__APPLE__) && defined(__MACH__)
