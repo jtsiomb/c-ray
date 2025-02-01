@@ -24,7 +24,7 @@ struct material {
 struct sphere {
 	vec3 pos;
 	float rad;
-	struct material mat;
+	material mat;
 };
 
 struct spoint {
